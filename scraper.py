@@ -9,23 +9,58 @@ import utils
 BASE_URL = "https://www.lietaresearch.com/platform"
 
 class LietaScraper:
-    def __init__(self, logger_func=print):
+    def __init__(self, logger_func=print, browser_type="chrome"):
         self.log = logger_func
         self.playwright = None
         self.browser = None
         self.storage_state_path = "state.json"
+        self.browser_type = browser_type
         
         self.stop_requested = False # Flag to control stopping
 
+    def _get_brave_path(self):
+        """Attempts to find Brave Browser executable path."""
+        import platform
+        system = platform.system()
+        
+        if system == "Windows":
+            paths = [
+                os.path.join(os.environ.get("PROGRAMFILES", "C:\\Program Files"), "BraveSoftware\\Brave-Browser\\Application\\brave.exe"),
+                os.path.join(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"), "BraveSoftware\\Brave-Browser\\Application\\brave.exe"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), "BraveSoftware\\Brave-Browser\\Application\\brave.exe")
+            ]
+            for p in paths:
+                if os.path.exists(p):
+                    return p
+        elif system == "Darwin": # macOS
+            path = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+            if os.path.exists(path):
+                return path
+        
+        return None
+
     async def start_browser(self, headless=False):
         self.playwright = await async_playwright().start()
-        # Use "chrome" channel to use installed Google Chrome
-        self.browser = await self.playwright.chromium.launch(
-            headless=headless, 
-            channel="chrome", 
-            args=["--disable-blink-features=AutomationControlled"] # Attempt to avoid some bot detection
-        )
-        self.log("Browser launched (System Chrome).")
+        
+        launch_args = {
+            "headless": headless,
+            "args": ["--disable-blink-features=AutomationControlled"]
+        }
+
+        if self.browser_type == "brave":
+            brave_path = self._get_brave_path()
+            if brave_path:
+                launch_args["executable_path"] = brave_path
+                self.log(f"Verified Brave path: {brave_path}")
+            else:
+                self.log("Brave not found, falling back to System Chrome...")
+                launch_args["channel"] = "chrome"
+        else:
+            # Default to Chrome
+            launch_args["channel"] = "chrome"
+
+        self.browser = await self.playwright.chromium.launch(**launch_args)
+        self.log(f"Browser launched ({self.browser_type}).")
 
     async def close(self):
         if self.browser:

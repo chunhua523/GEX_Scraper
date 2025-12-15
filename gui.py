@@ -83,6 +83,14 @@ class LietaApp(ctk.CTk):
         self.lbl_dl_path = ctk.CTkLabel(self.config_frame, text="No folder selected")
         self.lbl_dl_path.grid(row=5, column=1, padx=10, pady=10, sticky="w")
 
+        # Browser Selection
+        ctk.CTkLabel(self.config_frame, text="Browser:").grid(row=6, column=0, padx=10, pady=5, sticky="w")
+        self.var_browser = ctk.StringVar(value="chrome")
+        self.radio_chrome = ctk.CTkRadioButton(self.config_frame, text="Chrome (Default)", variable=self.var_browser, value="chrome")
+        self.radio_chrome.grid(row=6, column=1, padx=10, pady=5, sticky="w")
+        self.radio_brave = ctk.CTkRadioButton(self.config_frame, text="Brave Browser", variable=self.var_browser, value="brave")
+        self.radio_brave.grid(row=7, column=1, padx=10, pady=5, sticky="w")
+
         # 3. Model Selection & Options
         self.options_frame = ctk.CTkFrame(self.main_frame)
         self.options_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
@@ -143,10 +151,11 @@ class LietaApp(ctk.CTk):
     
     def on_login_click(self):
         self.btn_login.configure(state="disabled")
-        self.log("Initializing Login Browser...")
-        threading.Thread(target=self._run_login_thread, daemon=True).start()
+        browser_type = self.var_browser.get()
+        self.log(f"Initializing Login Browser ({browser_type})...")
+        threading.Thread(target=self._run_login_thread, args=(browser_type,), daemon=True).start()
 
-    def _run_login_thread(self):
+    def _run_login_thread(self, browser_type):
         try:
             # Create a new scraper instance for login or reuse?
             # Better to reuse internal browser state mechanism.
@@ -154,7 +163,8 @@ class LietaApp(ctk.CTk):
             # Shared one is better if we want to keep browser open, but here we save state to disk.
             # So ad-hoc instance is fine.
             # So ad-hoc instance is fine.
-            scraper = LietaScraper(logger_func=self.log_safe)
+            # So ad-hoc instance is fine.
+            scraper = LietaScraper(logger_func=self.log_safe, browser_type=browser_type)
             # Must run all steps in the same event loop
             asyncio.run(scraper.perform_login_flow())
             
@@ -215,15 +225,16 @@ class LietaApp(ctk.CTk):
             return
 
         parallel = self.var_parallel.get()
+        browser_type = self.var_browser.get()
 
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
-        self.log(f"Starting job... (Std: {len(tickers)} tickers, CME: {len(cme_tickers)} tickers)")
+        self.log(f"Starting job... (Std: {len(tickers)} tickers, CME: {len(cme_tickers)} tickers) Browser: {browser_type}")
         
-        threading.Thread(target=self._run_job_thread, args=(tickers, selected_models, cme_tickers, selected_cme_models, self.download_folder, parallel), daemon=True).start()
+        threading.Thread(target=self._run_job_thread, args=(tickers, selected_models, cme_tickers, selected_cme_models, self.download_folder, parallel, browser_type), daemon=True).start()
 
-    def _run_job_thread(self, tickers, models, cme_tickers, cme_models, download_folder, parallel):
-        self.scraper_instance = LietaScraper(logger_func=self.log_safe)
+    def _run_job_thread(self, tickers, models, cme_tickers, cme_models, download_folder, parallel, browser_type):
+        self.scraper_instance = LietaScraper(logger_func=self.log_safe, browser_type=browser_type)
         try:
             # Fix: Run everything in one asyncio loop to preserve browser connection
             asyncio.run(self.scraper_instance.perform_full_job(tickers, models, cme_tickers, cme_models, download_folder, parallel))
@@ -264,7 +275,8 @@ class LietaApp(ctk.CTk):
             "download_folder": self.download_folder,
             "selected_models": [m for m, var in self.model_vars.items() if var.get() != "off"],
             "selected_cme_models": [m for m, var in self.cme_model_vars.items() if var.get() != "off"],
-            "parallel": self.var_parallel.get()
+            "parallel": self.var_parallel.get(),
+            "browser": self.var_browser.get()
         }
         try:
             with open("settings.json", "w") as f:
@@ -304,6 +316,9 @@ class LietaApp(ctk.CTk):
             
             if "parallel" in settings:
                 self.var_parallel.set(settings["parallel"])
+            
+            if "browser" in settings:
+                self.var_browser.set(settings["browser"])
                 
         except Exception as e:
             print(f"Failed to load settings: {e}")
