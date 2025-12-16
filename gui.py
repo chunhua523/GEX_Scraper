@@ -4,6 +4,7 @@ from tkinter import filedialog
 import threading
 import asyncio
 import os
+from datetime import datetime
 from scraper import LietaScraper
 import utils
 # from scraper import LietaScraper
@@ -26,6 +27,33 @@ class LietaApp(ctk.CTk):
         
         self.load_settings()
         self.protocol("WM_DELETE_WINDOW", self.close_app)
+        
+        self.current_log_file = None
+        self.last_run_date = None
+        self.check_schedule()
+
+    def check_schedule(self):
+        """Checks every 10s if we need to run the scheduled task."""
+        if self.var_schedule_en.get():
+            now = datetime.now()
+            # day_name = now.strftime("%A") 
+            day_index = now.weekday() # 0 = Monday, ..., 4 = Friday
+            current_time = now.strftime("%H:%M")
+            
+            target_time = self.entry_time.get()
+            
+            # Check: Mon-Fri (0-4), Time matches (within this minute), and haven't run today
+            if 0 <= day_index <= 4 and current_time == target_time:
+                today_str = now.strftime("%Y-%m-%d")
+                if self.last_run_date != today_str:
+                    if self.btn_start.cget("state") != "disabled":
+                        self.log(f"Auto-Schedule Triggered (Mon-Fri) at {target_time}")
+                        self.last_run_date = today_str
+                        self.on_start()
+                    else:
+                        self.log("Skipping Schedule: Job already running.")
+        
+        self.after(10000, self.check_schedule)
     
     def create_sidebar(self):
         self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
@@ -36,112 +64,139 @@ class LietaApp(ctk.CTk):
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
 
     def create_main_area(self):
-        # Use ScrollableFrame to prevent cutting off elements when window is small
+        # Main scrollable container
         self.main_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.main_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
         self.main_frame.grid_columnconfigure(0, weight=1)
-        # self.main_frame.grid_rowconfigure(3, weight=1) # No longer needed with scrollable frame
-        
-        # 1. Login / Status Section
-        self.status_frame = ctk.CTkFrame(self.main_frame)
-        self.status_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
-        
-        self.btn_login = ctk.CTkButton(self.status_frame, text="Log in via Browser", command=self.on_login_click)
-        self.btn_login.pack(side="left", padx=10, pady=10)
-        
-        self.lbl_login_status = ctk.CTkLabel(self.status_frame, text="Not Logged In", text_color="red")
-        self.lbl_login_status.pack(side="left", padx=10)
+        self.main_frame.grid_columnconfigure(1, weight=1)
 
-        # 2. Configuration Section
-        self.config_frame = ctk.CTkFrame(self.main_frame)
-        self.config_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
+        # 1. Top Bar: Login + Browser Selection
+        self.top_bar = ctk.CTkFrame(self.main_frame)
+        self.top_bar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=0, pady=(0, 15))
         
+        self.btn_login = ctk.CTkButton(self.top_bar, text="Log in via Browser", command=self.on_login_click, width=140)
+        self.btn_login.pack(side="left", padx=15, pady=10)
         
-        # --- Standard Platform ---
-        ctk.CTkLabel(self.config_frame, text="[Standard Platform]", font=("", 14, "bold")).grid(row=0, column=0, columnspan=2, pady=(10, 5), sticky="w")
+        self.lbl_login_status = ctk.CTkLabel(self.top_bar, text="Not Logged In", text_color="red", font=("", 12, "bold"))
+        self.lbl_login_status.pack(side="left", padx=5)
 
-        # Ticker File
-        self.btn_ticker_file = ctk.CTkButton(self.config_frame, text="Select Ticker List", command=self.select_ticker_file)
-        self.btn_ticker_file.grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        self.lbl_ticker_file = ctk.CTkLabel(self.config_frame, text="No file selected")
-        self.lbl_ticker_file.grid(row=1, column=1, padx=10, pady=5, sticky="w")
-
-        # --- CME Platform ---
-        ctk.CTkLabel(self.config_frame, text="[CME Platform]", font=("", 14, "bold")).grid(row=2, column=0, columnspan=2, pady=(15, 5), sticky="w")
-
-        # CME Ticker File
-        self.btn_cme_ticker = ctk.CTkButton(self.config_frame, text="Select CME Ticker List", command=self.select_cme_ticker_file)
-        self.btn_cme_ticker.grid(row=3, column=0, padx=10, pady=5, sticky="w")
-        self.lbl_cme_ticker = ctk.CTkLabel(self.config_frame, text="No file selected")
-        self.lbl_cme_ticker.grid(row=3, column=1, padx=10, pady=5, sticky="w")
-
-        # Global Download Path
-        ctk.CTkLabel(self.config_frame, text="[Global Configuration]", font=("", 14, "bold")).grid(row=4, column=0, columnspan=2, pady=(15, 5), sticky="w")
-        
-        self.btn_dl_path = ctk.CTkButton(self.config_frame, text="Select Download Folder", command=self.select_download_path)
-        self.btn_dl_path.grid(row=5, column=0, padx=10, pady=10, sticky="w")
-        self.lbl_dl_path = ctk.CTkLabel(self.config_frame, text="No folder selected")
-        self.lbl_dl_path.grid(row=5, column=1, padx=10, pady=10, sticky="w")
-
-        # Browser Selection
-        ctk.CTkLabel(self.config_frame, text="Browser:").grid(row=6, column=0, padx=10, pady=5, sticky="w")
+        # Browser Selection (Right aligned in top bar)
         self.var_browser = ctk.StringVar(value="chrome")
-        self.radio_chrome = ctk.CTkRadioButton(self.config_frame, text="Chrome (Default)", variable=self.var_browser, value="chrome")
-        self.radio_chrome.grid(row=6, column=1, padx=10, pady=5, sticky="w")
-        self.radio_brave = ctk.CTkRadioButton(self.config_frame, text="Brave Browser", variable=self.var_browser, value="brave")
-        self.radio_brave.grid(row=7, column=1, padx=10, pady=5, sticky="w")
+        radio_brave = ctk.CTkRadioButton(self.top_bar, text="Brave", variable=self.var_browser, value="brave", width=60)
+        radio_brave.pack(side="right", padx=15)
+        radio_chrome = ctk.CTkRadioButton(self.top_bar, text="Chrome", variable=self.var_browser, value="chrome", width=70)
+        radio_chrome.pack(side="right", padx=5)
+        ctk.CTkLabel(self.top_bar, text="Browser:").pack(side="right", padx=5)
 
-        # 3. Model Selection & Options
-        self.options_frame = ctk.CTkFrame(self.main_frame)
-        self.options_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+
+        # 2. Main Config Area - Two Columns
+        # Left: Standard Platform
+        self.std_frame = ctk.CTkFrame(self.main_frame)
+        self.std_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 10), pady=0)
+        self.std_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(self.std_frame, text="Standard Platform", font=("", 16, "bold")).pack(pady=(10, 5), anchor="w", padx=15)
         
-        # Standard Models
-        ctk.CTkLabel(self.options_frame, text="Standard Models:").pack(anchor="w", padx=10, pady=5)
-        self.scroll_models = ctk.CTkScrollableFrame(self.options_frame, height=120)
-        self.scroll_models.pack(fill="x", padx=10, pady=5)
+        # Standard Ticker Row
+        self.std_ticker_row = ctk.CTkFrame(self.std_frame, fg_color="transparent")
+        self.std_ticker_row.pack(padx=0, pady=5, fill="x", anchor="w")
+        
+        self.btn_ticker_file = ctk.CTkButton(self.std_ticker_row, text="Select Ticker List", command=self.select_ticker_file, width=140)
+        self.btn_ticker_file.grid(row=0, column=0, padx=15, sticky="w")
+        self.lbl_ticker_file = ctk.CTkLabel(self.std_ticker_row, text="No file selected", font=("", 12), text_color="#DCE4EE")
+        self.lbl_ticker_file.grid(row=0, column=1, padx=5, sticky="w")
+
+        # Standard Models Grid
+        ctk.CTkLabel(self.std_frame, text="Models:", font=("", 13, "bold")).pack(padx=15, pady=(5,0), anchor="w")
+        self.range_std_models = ctk.CTkFrame(self.std_frame, fg_color="transparent")
+        self.range_std_models.pack(padx=10, pady=5, fill="x")
         
         self.model_vars = {}
         standard_models = ["Gamma", "Delta", "Theta", "Term", "Smile", "Levels", "Table", "TV Code"] 
-        for model in standard_models:
+        for i, model in enumerate(standard_models):
             var = ctk.StringVar(value="off")
-            chk = ctk.CTkCheckBox(self.scroll_models, text=model, variable=var, onvalue=model, offvalue="off")
-            chk.pack(anchor="w", pady=2)
+            chk = ctk.CTkCheckBox(self.range_std_models, text=model, variable=var, onvalue=model, offvalue="off", font=("", 12))
+            chk.grid(row=i//2, column=i%2, sticky="w", padx=5, pady=5) # 2 columns
             self.model_vars[model] = var
 
-        # CME Models
-        ctk.CTkLabel(self.options_frame, text="CME Models:").pack(anchor="w", padx=10, pady=5)
-        self.scroll_cme_models = ctk.CTkScrollableFrame(self.options_frame, height=100)
-        self.scroll_cme_models.pack(fill="x", padx=10, pady=5)
-        
+
+        # Right: CME Platform
+        self.cme_frame = ctk.CTkFrame(self.main_frame)
+        self.cme_frame.grid(row=1, column=1, sticky="nsew", padx=(10, 0), pady=0)
+        self.cme_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(self.cme_frame, text="CME Platform", font=("", 16, "bold")).pack(pady=(10, 5), anchor="w", padx=15)
+
+        # CME Ticker Row
+        self.cme_ticker_row = ctk.CTkFrame(self.cme_frame, fg_color="transparent")
+        self.cme_ticker_row.pack(padx=0, pady=5, fill="x", anchor="w")
+
+        self.btn_cme_ticker = ctk.CTkButton(self.cme_ticker_row, text="Select CME Ticker List", command=self.select_cme_ticker_file, width=140)
+        self.btn_cme_ticker.grid(row=0, column=0, padx=15, sticky="w")
+        self.lbl_cme_ticker = ctk.CTkLabel(self.cme_ticker_row, text="No file selected", font=("", 12), text_color="#DCE4EE")
+        self.lbl_cme_ticker.grid(row=0, column=1, padx=5, sticky="w")
+
+        # CME Models Grid
+        ctk.CTkLabel(self.cme_frame, text="Models:", font=("", 13, "bold")).pack(padx=15, pady=(5,0), anchor="w")
+        self.range_cme_models = ctk.CTkFrame(self.cme_frame, fg_color="transparent")
+        self.range_cme_models.pack(padx=10, pady=5, fill="x")
+
         self.cme_model_vars = {}
         cme_models = ["Gamma", "Delta", "Smile", "Term", "TV Code"]
-        for model in cme_models:
+        for i, model in enumerate(cme_models):
             var = ctk.StringVar(value="off")
-            chk = ctk.CTkCheckBox(self.scroll_cme_models, text=model, variable=var, onvalue=model, offvalue="off")
-            chk.pack(anchor="w", pady=2)
+            chk = ctk.CTkCheckBox(self.range_cme_models, text=model, variable=var, onvalue=model, offvalue="off", font=("", 12))
+            chk.grid(row=i//2, column=i%2, sticky="w", padx=5, pady=5) # 2 columns
             self.cme_model_vars[model] = var
 
-        # Parallel Execution
+
+        # 3. Global Configuration (Download Path + Settings)
+        self.global_frame = ctk.CTkFrame(self.main_frame)
+        self.global_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=0, pady=15)
+        
+        ctk.CTkLabel(self.global_frame, text="Global Configuration", font=("", 14, "bold")).grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w", columnspan=2)
+
+        # Row 1: Download Path
+        self.btn_dl_path = ctk.CTkButton(self.global_frame, text="Select Download Folder", command=self.select_download_path, width=180)
+        self.btn_dl_path.grid(row=1, column=0, padx=15, pady=(5, 10), sticky="w")
+        self.lbl_dl_path = ctk.CTkLabel(self.global_frame, text="No folder selected", font=("", 12), text_color="#DCE4EE")
+        self.lbl_dl_path.grid(row=1, column=1, padx=5, pady=(5, 10), sticky="w")
+
+        # Row 2: Parallel Switch (Separate Line)
         self.var_parallel = ctk.BooleanVar(value=False)
-        self.chk_parallel = ctk.CTkSwitch(self.options_frame, text="Multi-window Mode (Parallel Download)", variable=self.var_parallel)
-        self.chk_parallel.pack(anchor="w", padx=10, pady=10)
+        self.chk_parallel = ctk.CTkSwitch(self.global_frame, text="Multi-window Mode (Scrape Std & CME in parallel)", variable=self.var_parallel)
+        self.chk_parallel.grid(row=2, column=0, columnspan=2, padx=15, pady=5, sticky="w")
+
+        # Row 3: Schedule Section (Separate Line with background)
+        self.schedule_subframe = ctk.CTkFrame(self.global_frame, fg_color="transparent")
+        self.schedule_subframe.grid(row=3, column=0, columnspan=2, sticky="ew", padx=15, pady=(5, 15))
+        
+        ctk.CTkLabel(self.schedule_subframe, text="Auto-Schedule (Mon-Fri):", font=("",12,"bold")).pack(side="left", padx=(0, 10))
+        
+        self.entry_time = ctk.CTkEntry(self.schedule_subframe, placeholder_text="09:00", width=80)
+        self.entry_time.pack(side="left", padx=(0, 15))
+        
+        self.var_schedule_en = ctk.BooleanVar(value=False)
+        self.chk_schedule = ctk.CTkSwitch(self.schedule_subframe, text="Enable Auto-Run", variable=self.var_schedule_en)
+        self.chk_schedule.pack(side="left")
+
 
         # 4. Action Buttons
         self.action_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.action_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=10)
+        self.action_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=0, pady=0)
         
-        self.btn_start = ctk.CTkButton(self.action_frame, text="Start Scraping", fg_color="green", command=self.on_start)
-        self.btn_start.pack(side="left", padx=10, expand=True, fill="x")
+        self.btn_start = ctk.CTkButton(self.action_frame, text="START SCRAPING", fg_color="#2CC985", hover_color="#229C68", height=40, font=("", 14, "bold"), command=self.on_start)
+        self.btn_start.pack(side="left", padx=(0, 10), expand=True, fill="x")
         
-        self.btn_stop = ctk.CTkButton(self.action_frame, text="Stop", fg_color="red", state="disabled", command=self.on_stop)
-        self.btn_stop.pack(side="right", padx=10, expand=True, fill="x")
+        self.btn_stop = ctk.CTkButton(self.action_frame, text="STOP", fg_color="#FF4D4D", hover_color="#CC0000", state="disabled", height=40, font=("", 14, "bold"), command=self.on_stop)
+        self.btn_stop.pack(side="right", padx=(10, 0), expand=True, fill="x")
 
-        # 5. Console
+        # 6. Console
         self.console_label = ctk.CTkLabel(self.main_frame, text="Logs:")
-        self.console_label.grid(row=4, column=0, sticky="w", padx=20)
+        self.console_label.grid(row=5, column=0, sticky="w", padx=20)
         
         self.console = ctk.CTkTextbox(self.main_frame, height=150)
-        self.console.grid(row=5, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        self.console.grid(row=6, column=0, sticky="nsew", padx=20, pady=(0, 20))
         
         # State variables
         self.ticker_filepath = None
@@ -229,7 +284,13 @@ class LietaApp(ctk.CTk):
 
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
+        
+        # Setup Logger for this run
+        os.makedirs("logs", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.current_log_file = os.path.join("logs", f"run_{timestamp}.log")
         self.log(f"Starting job... (Std: {len(tickers)} tickers, CME: {len(cme_tickers)} tickers) Browser: {browser_type}")
+        self.log(f"Logging to: {self.current_log_file}")
         
         threading.Thread(target=self._run_job_thread, args=(tickers, selected_models, cme_tickers, selected_cme_models, self.download_folder, parallel, browser_type), daemon=True).start()
 
@@ -248,6 +309,7 @@ class LietaApp(ctk.CTk):
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
         self.log("Ready.")
+        self.current_log_file = None
 
     
     def on_stop(self):
@@ -260,9 +322,17 @@ class LietaApp(ctk.CTk):
             # If we were using proper asyncio loop integration in GUI we could cancel task.
             # With threading, we rely on the flag check inside scraper logic.
 
+
     def log(self, message):
         self.console.insert("end", message + "\n")
         self.console.see("end")
+        
+        if self.current_log_file:
+            try:
+                with open(self.current_log_file, "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
+            except Exception:
+                pass
         
     def log_safe(self, message):
         self.after(0, lambda: self.log(message))
@@ -276,7 +346,9 @@ class LietaApp(ctk.CTk):
             "selected_models": [m for m, var in self.model_vars.items() if var.get() != "off"],
             "selected_cme_models": [m for m, var in self.cme_model_vars.items() if var.get() != "off"],
             "parallel": self.var_parallel.get(),
-            "browser": self.var_browser.get()
+            "browser": self.var_browser.get(),
+            "schedule_enabled": self.var_schedule_en.get(),
+            "schedule_time": self.entry_time.get()
         }
         try:
             with open("settings.json", "w") as f:
@@ -319,6 +391,13 @@ class LietaApp(ctk.CTk):
             
             if "browser" in settings:
                 self.var_browser.set(settings["browser"])
+
+            if "schedule_enabled" in settings:
+                self.var_schedule_en.set(settings["schedule_enabled"])
+
+            if "schedule_time" in settings:
+                self.entry_time.delete(0, "end")
+                self.entry_time.insert(0, settings["schedule_time"])
                 
         except Exception as e:
             print(f"Failed to load settings: {e}")
