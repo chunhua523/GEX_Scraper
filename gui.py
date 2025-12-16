@@ -660,6 +660,14 @@ class LietaApp(ctk.CTk):
                 except Exception as e:
                     print(f"Error creating aggregate TV file: {e}")
 
+        ctk.CTkButton(btn_frame, text="Select All", command=select_all, width=120).pack(side="left", padx=20)
+        ctk.CTkButton(btn_frame, text="Deselect All", command=deselect_all, width=120).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Open Selected", command=open_selected, width=150, fg_color="#2CC985", hover_color="#229C68", text_color="white").pack(side="right", padx=20)
+
+        # Init list
+        if sorted_models[0] != "No Data":
+            update_list(sorted_models[0])
+
     def open_file_cross_platform(self, filepath):
         import subprocess, sys, platform
         try:
@@ -671,14 +679,6 @@ class LietaApp(ctk.CTk):
                 subprocess.call(('xdg-open', filepath))
         except Exception as e:
             print(f"Failed to open file cross-platform: {e}")
-
-        ctk.CTkButton(btn_frame, text="Select All", command=select_all, width=120).pack(side="left", padx=20)
-        ctk.CTkButton(btn_frame, text="Deselect All", command=deselect_all, width=120).pack(side="left", padx=5)
-        ctk.CTkButton(btn_frame, text="Open Selected", command=open_selected, width=150, fg_color="#2CC985", hover_color="#229C68", text_color="white").pack(side="right", padx=20)
-
-        # Init list
-        if sorted_models[0] != "No Data":
-            update_list(sorted_models[0])
 
     def close_app(self):
         try:
