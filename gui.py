@@ -624,8 +624,6 @@ class LietaApp(ctk.CTk):
                             tv_data_to_show.append(data)
                         else:
                             # Normal file path - open immediately
-                        else:
-                            # Normal file path - open immediately
                             self.open_file_cross_platform(data)
                     except Exception as e:
                         print(f"Error opening item: {e}")
