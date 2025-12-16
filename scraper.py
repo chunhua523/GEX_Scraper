@@ -304,25 +304,38 @@ class LietaScraper:
                 await asyncio.sleep(2) # Min wait
                 
                 # If model is TV Code, we scrape text
+                # If model is TV Code, we scrape text
                 if model == "TV Code":
-                    # ... (Extraction logic remains same) ...
-                    # Wait for results to appear
-                    await page.wait_for_selector("text=Put Wall", state="visible", timeout=60000) 
-                    
-                    content = await page.evaluate("() => document.body.innerText")
-                    # Naive extraction: find line with Ticker
-                    found_code = False
-                    for line in content.split('\n'):
-                        # Line format usually: "SPX" .... "Put Wall" ...
-                        # Check if matches current ticker to ensure we aren't reading stale data
-                        if (f'"{ticker}"' in line or line.startswith(f'"{ticker}"')) and "Put Wall" in line:
-                            tv_codes_list.append(line.strip('" '))
-                            self.log(f"[{model}] {ticker} - Code extracted.")
-                            self.success_count += 1
-                            found_code = True
+                    # Polling for data update (up to 20s)
+                    found_code_line = None
+                    for _ in range(40): # 20 seconds total
+                        if self.stop_requested: return
+                        
+                        # Wait for ANY Put Wall to be present logic (fast check)
+                        try:
+                            # We verify "Put Wall" exists first to avoid reading empty body
+                            if await page.get_by_text("Put Wall").count() > 0:
+                                content = await page.evaluate("() => document.body.innerText")
+                                for line in content.split('\n'):
+                                    # Relaxed check: Just ticker and Put Wall in same line.
+                                    # Ensure strict word boundary for ticker if possible, but for now exact substring
+                                    if ticker in line and "Put Wall" in line:
+                                        found_code_line = line
+                                        break
+                        except:
+                            pass
+                        
+                        if found_code_line:
                             break
+                        await asyncio.sleep(0.5)
                     
-                    if not found_code:
+                    if found_code_line:
+                        tv_codes_list.append(found_code_line.strip('" '))
+                        self.log(f"[{model}] {ticker} - Code extracted.")
+                        self.success_count += 1
+                        # Wait a bit to ensure we don't spam too fast
+                        await asyncio.sleep(1) 
+                    else:
                         raise Exception(f"Validation failed: No data found for ticker {ticker} (Stale data from previous search?)")
                 else:
                     # Standard Download
