@@ -308,7 +308,7 @@ class LietaScraper:
                 if model == "TV Code":
                     # Polling for data update (up to 20s)
                     found_code_line = None
-                    for _ in range(40): # 20 seconds total
+                    for _ in range(60): # 30 seconds total
                         if self.stop_requested: return
                         
                         # Wait for ANY Put Wall to be present logic (fast check)
@@ -316,13 +316,35 @@ class LietaScraper:
                             # We verify "Put Wall" exists first to avoid reading empty body
                             if await page.get_by_text("Put Wall").count() > 0:
                                 content = await page.evaluate("() => document.body.innerText")
+                                found_current_ticker = False
                                 for line in content.split('\n'):
                                     # Relaxed check: Just ticker and Put Wall in same line.
-                                    # Ensure strict word boundary for ticker if possible, but for now exact substring
                                     if ticker in line and "Put Wall" in line:
                                         found_code_line = line
+                                        found_current_ticker = True
                                         break
-                        except:
+                                
+                                if found_code_line:
+                                    break
+                                
+                                # If we found "Put Wall" but NOT the current ticker, this is likely stale data or server busy
+                                # Check for specific error message toast if possible, or just fail fast
+                                if not found_current_ticker:
+                                    # Optional: Check for explicit error toast
+                                    if await page.get_by_text("獲取數據失敗").count() > 0 or await page.get_by_text("Please Try Again").count() > 0:
+                                        raise Exception("Server indicated failure (Toast detected).")
+                                    
+                                    # Stale data detection
+                                    raise Exception(f"Stale data detected: Found 'Put Wall' but not for {ticker}.")
+
+                            # Also check for Toast independently if Put Wall didn't show up yet but error did
+                            if await page.get_by_text("獲取數據失敗").count() > 0 or await page.get_by_text("Please Try Again").count() > 0:
+                                raise Exception("Server indicated failure (Toast detected).")
+
+                        except Exception as e:
+                            # specific retry exceptions should propagate
+                            if "Server indicated" in str(e) or "Stale data" in str(e):
+                                raise e
                             pass
                         
                         if found_code_line:
@@ -339,10 +361,57 @@ class LietaScraper:
                         raise Exception(f"Validation failed: No data found for ticker {ticker} (Stale data from previous search?)")
                 else:
                     # Standard Download
-                    async with page.expect_download(timeout=60000) as download_info:
-                        await download_btn.click()
-                    
-                    download = await download_info.value
+                    # We need to monitor for Error Toast WHILE waiting for download
+                    # Create a task for the download event
+                    try:
+                        async with page.expect_download(timeout=60000) as download_info:
+                            await download_btn.click()
+                            
+                            # Polling for error while waiting for download
+                            # Since expect_download is a context manager that waits on __exit__, 
+                            # we can't easily run a parallel loop *inside* the with-block efficiently 
+                            # because flow blocks at __exit__.
+                            # HOWEVER, Playwright's expect_download returns a Download object when yielded? 
+                            # No, it yields an EventInfo that you await .value on.
+                            
+                            # Hack: We can start a background check loop, but we need to stop it when download starts.
+                            # Better approach: Use asyncio.wait between download_info.value and error check?
+                            
+                            # Let's try a custom wait loop instead of simple await download_info.value
+                            
+                            # Create a task for Getting the download
+                            download_task = asyncio.create_task(download_info.value)
+                            
+                            # Create a polling loop for error visibility
+                            async def check_error():
+                                for _ in range(120): # 60s
+                                    if await page.get_by_text("獲取數據失敗").count() > 0 or await page.get_by_text("Please Try Again").count() > 0:
+                                        return True
+                                    if download_task.done():
+                                        return False
+                                    await asyncio.sleep(0.5)
+                                return False
+
+                            error_task = asyncio.create_task(check_error())
+                            
+                            done, pending = await asyncio.wait([download_task, error_task], return_when=asyncio.FIRST_COMPLETED)
+                            
+                            if error_task in done and error_task.result():
+                                # Error detected
+                                raise Exception("Server indicated failure (Toast detected) during download.")
+                            
+                            # If we are here, either download is done OR timeout (handled by expect_download internal timeout usually? No, we need to await download_task)
+                            if not download_task.done():
+                                # This means error_task finished with False (unlikely if loop matches timeout) or we timed out logic?
+                                # Let's await download_task to get the download object
+                                # If it timed out, it will raise here.
+                                await download_task
+                            
+                            download = await download_task
+
+                    except Exception as e:
+                         # Re-raise to trigger retry
+                         raise e
                     
                     # Structure: 
                     # Standard: download_folder/Model/Ticker/Ticker_date.HTML
