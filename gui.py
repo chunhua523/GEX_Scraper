@@ -624,7 +624,9 @@ class LietaApp(ctk.CTk):
                             tv_data_to_show.append(data)
                         else:
                             # Normal file path - open immediately
-                            os.startfile(data)
+                        else:
+                            # Normal file path - open immediately
+                            self.open_file_cross_platform(data)
                     except Exception as e:
                         print(f"Error opening item: {e}")
             
@@ -655,9 +657,22 @@ class LietaApp(ctk.CTk):
                             tmp.write(f"{t_label}:\n\n")
                             tmp.write(f"{clean_content}\n\n")
                             
-                    os.startfile(path)
+                            
+                    self.open_file_cross_platform(path)
                 except Exception as e:
                     print(f"Error creating aggregate TV file: {e}")
+
+    def open_file_cross_platform(self, filepath):
+        import subprocess, sys, platform
+        try:
+            if platform.system() == 'Windows':
+                os.startfile(filepath)
+            elif platform.system() == 'Darwin':       # macOS
+                subprocess.call(('open', filepath))
+            else:                                     # Linux
+                subprocess.call(('xdg-open', filepath))
+        except Exception as e:
+            print(f"Failed to open file cross-platform: {e}")
 
         ctk.CTkButton(btn_frame, text="Select All", command=select_all, width=120).pack(side="left", padx=20)
         ctk.CTkButton(btn_frame, text="Deselect All", command=deselect_all, width=120).pack(side="left", padx=5)
