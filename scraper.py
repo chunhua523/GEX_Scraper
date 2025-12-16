@@ -274,7 +274,7 @@ class LietaScraper:
             await page.close()
 
     async def process_single_ticker(self, page, model, ticker, download_folder, tv_codes_list, subfolder_prefix):
-        max_retries = 3
+        max_retries = 10
         for attempt in range(max_retries):
             if self.stop_requested: 
                 prefix_log = f"[CME-{model}]" if subfolder_prefix else f"[{model}]"
@@ -311,13 +311,19 @@ class LietaScraper:
                     
                     content = await page.evaluate("() => document.body.innerText")
                     # Naive extraction: find line with Ticker
+                    found_code = False
                     for line in content.split('\n'):
-                        if ticker in line and "Put Wall" in line:
-                            tv_codes_list.append(line.strip('" '))
+                        # Line format usually: "SPX" .... "Put Wall" ...
+                        # Check if matches current ticker to ensure we aren't reading stale data
+                        if (f'"{ticker}"' in line or line.startswith(f'"{ticker}"')) and "Put Wall" in line:
                             tv_codes_list.append(line.strip('" '))
                             self.log(f"[{model}] {ticker} - Code extracted.")
                             self.success_count += 1
+                            found_code = True
                             break
+                    
+                    if not found_code:
+                        raise Exception(f"Validation failed: No data found for ticker {ticker} (Stale data from previous search?)")
                 else:
                     # Standard Download
                     async with page.expect_download(timeout=60000) as download_info:
