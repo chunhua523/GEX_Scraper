@@ -197,10 +197,10 @@ class LietaApp(ctk.CTk):
 
         # 6. Console
         self.console_label = ctk.CTkLabel(self.main_frame, text="Logs:")
-        self.console_label.grid(row=5, column=0, sticky="w", padx=20)
+        self.console_label.grid(row=5, column=0, columnspan=2, sticky="w", padx=20)
         
         self.console = ctk.CTkTextbox(self.main_frame, height=150)
-        self.console.grid(row=6, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        self.console.grid(row=6, column=0, columnspan=2, sticky="nsew", padx=20, pady=(0, 20))
         
         # State variables
         self.ticker_filepath = None
@@ -328,7 +328,8 @@ class LietaApp(ctk.CTk):
 
 
     def log(self, message):
-        self.console.insert("end", message + "\n")
+        timestamp_str = datetime.now().strftime("[%H:%M:%S] ")
+        self.console.insert("end", timestamp_str + message + "\n")
         self.console.see("end")
         
         if self.current_log_file:

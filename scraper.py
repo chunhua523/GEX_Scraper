@@ -248,6 +248,7 @@ class LietaScraper:
         """
         page = await context.new_page()
         try:
+            page.set_default_timeout(60000) # Set timeout to 60s
             prefix_log = f"[CME-{model}]" if subfolder_prefix else f"[{model}]"
             self.log(f"{prefix_log} Page initialized.")
             await page.goto(target_url)
@@ -274,7 +275,7 @@ class LietaScraper:
             await page.close()
 
     async def process_single_ticker(self, page, model, ticker, download_folder, tv_codes_list, subfolder_prefix):
-        max_retries = 10
+        max_retries = 15
         for attempt in range(max_retries):
             if self.stop_requested: 
                 prefix_log = f"[CME-{model}]" if subfolder_prefix else f"[{model}]"
@@ -287,6 +288,24 @@ class LietaScraper:
                 
                 # 3. Enter
                 await page.get_by_role("button", name="Enter").click()
+                
+                # --- Early Failure Detection (User Request) ---
+                # "如果按下 Enter 後等兩秒沒有出現這個畫面，也要直接 retry"
+                await asyncio.sleep(2)
+                
+                # Check 1: Is the specific loading text present?
+                loading_text_present = await page.get_by_text("有些模型需要較長的時間計算").count() > 0
+                
+                # Check 2: Is the data already valid (Fast load)?
+                # If data loaded instantly, we shouldn't fail even if loading text is gone.
+                fast_check_content = await page.evaluate("() => document.body.innerText")
+                data_already_loaded = False
+                if f"{ticker} " in fast_check_content or f"{ticker}:" in fast_check_content or \
+                   f"{ticker}\n" in fast_check_content or f" {ticker}" in fast_check_content:
+                    data_already_loaded = True
+                
+                if not loading_text_present and not data_already_loaded:
+                    raise Exception("Action failed: No loading screen or data update detected after 2s (Click might have been ignored).")
                 
                 # 4. Wait for processing
                 # Detection: "Download" button becomes enabled? Or data appears?
@@ -301,14 +320,79 @@ class LietaScraper:
                 
                 # Wait for response
                 # We'll wait up to 30s
-                await asyncio.sleep(2) # Min wait
+                
+                # 4. Wait for processing & Validate Data Load
+                # Validate that the page has actually loaded the data for the requested TICKER
+                # This prevents downloading stale data from the previous search
+                
+                data_validated = False
+                for _ in range(120): # Wait up to 60s
+                    if self.stop_requested: return
+
+                    try:
+                        # 4.1 Check for Server Errors (Toast)
+                        # 4.1 Check for Server Errors (Toast)
+                            # Check CN Toast
+                        t_cn = page.get_by_text("獲取數據失敗")
+                        if await t_cn.count() > 0:
+                            msg = await t_cn.first.text_content()
+                            raise Exception(f"Server indicated failure: {msg}")
+
+                        # Check EN Toast
+                        t_en = page.get_by_text("Please Try Again")
+                        if await t_en.count() > 0:
+                            msg = await t_en.first.text_content()
+                            raise Exception(f"Server indicated failure: {msg}")
+
+                        # 4.2 Check for Ticker Presence in Content
+                        # We get the full text to ensure the new Ticker is mentioned in the charts/header
+                        content_text = await page.evaluate("() => document.body.innerText")
+                        
+                        # Heuristic: The Ticker should appear in the body text (Chart Title, etc.)
+                        # We look for the ticker string. To avoid matching the input box only, 
+                        # we can try to look for "{Ticker} Dealers" or just assume if it appears 
+                        # multiple times or in specific context it's good.
+                        # Simple check: If content contains Ticker. 
+                        # Problem: Input box contains Ticker.
+                        # Refined Check: The screenshot shows "SPX Dealers Gamma Hedging".
+                        # So we check for Ticker + " " (space) or Ticker + ":" or Ticker + " Dealers"
+                        
+                        # If we just switched, the OLD ticker might still be there for a split second?
+                        # No, usually innerText updates. 
+                        # We want to ensure at least ONE instance of the Ticker exists that is NOT the input?
+                        # Actually, looking for the specific header pattern from screenshot is best.
+                        # But we need to be general.
+                        
+                        # Let's count occurrences of the Ticker string.
+                        # If > 1 (Input + Header), likely loaded.
+                        # Or check if "Dealers" is present?
+                        
+                        # Let's trust that if the text contains "{Ticker} ", it's likely the header or content.
+                        if f"{ticker} " in content_text or f"{ticker}:" in content_text or \
+                           f"{ticker}\n" in content_text or f" {ticker}" in content_text:
+                            data_validated = True
+                            break
+                            
+                    except Exception as e:
+                        if "Server indicated" in str(e): raise e
+                        # Ignore other parsing errors while waiting
+                        pass
+                        
+                    await asyncio.sleep(0.5)
+                
+                if not data_validated:
+                     # This usually means the Spinner didn't stop, or the page never updated from the previous ticker
+                     raise Exception(f"Validation failed: Ticker '{ticker}' not found in loaded content (Stale data?).")
+                
+                # Additional small buffer for rendering
+                await asyncio.sleep(1)
                 
                 # If model is TV Code, we scrape text
                 # If model is TV Code, we scrape text
                 if model == "TV Code":
                     # Polling for data update (up to 20s)
                     found_code_line = None
-                    for _ in range(60): # 30 seconds total
+                    for _ in range(120): # 60 seconds total
                         if self.stop_requested: return
                         
                         # Wait for ANY Put Wall to be present logic (fast check)
@@ -330,16 +414,32 @@ class LietaScraper:
                                 # If we found "Put Wall" but NOT the current ticker, this is likely stale data or server busy
                                 # Check for specific error message toast if possible, or just fail fast
                                 if not found_current_ticker:
-                                    # Optional: Check for explicit error toast
-                                    if await page.get_by_text("獲取數據失敗").count() > 0 or await page.get_by_text("Please Try Again").count() > 0:
-                                        raise Exception("Server indicated failure (Toast detected).")
+                                    # Check CN Toast
+                                    t_cn = page.get_by_text("獲取數據失敗")
+                                    if await t_cn.count() > 0:
+                                        msg = await t_cn.first.text_content()
+                                        raise Exception(f"Server indicated failure: {msg}")
+                                    
+                                    # Check EN Toast
+                                    t_en = page.get_by_text("Please Try Again")
+                                    if await t_en.count() > 0:
+                                        msg = await t_en.first.text_content()
+                                        raise Exception(f"Server indicated failure: {msg}")
                                     
                                     # Stale data detection
                                     raise Exception(f"Stale data detected: Found 'Put Wall' but not for {ticker}.")
 
-                            # Also check for Toast independently if Put Wall didn't show up yet but error did
-                            if await page.get_by_text("獲取數據失敗").count() > 0 or await page.get_by_text("Please Try Again").count() > 0:
-                                raise Exception("Server indicated failure (Toast detected).")
+                            # Check CN Toast
+                            t_cn = page.get_by_text("獲取數據失敗")
+                            if await t_cn.count() > 0:
+                                msg = await t_cn.first.text_content()
+                                raise Exception(f"Server indicated failure: {msg}")
+                            
+                            # Check EN Toast
+                            t_en = page.get_by_text("Please Try Again")
+                            if await t_en.count() > 0:
+                                msg = await t_en.first.text_content()
+                                raise Exception(f"Server indicated failure: {msg}")
 
                         except Exception as e:
                             # specific retry exceptions should propagate
@@ -383,22 +483,35 @@ class LietaScraper:
                             download_task = asyncio.create_task(download_info.value)
                             
                             # Create a polling loop for error visibility
+                            # Create a polling loop for error visibility
                             async def check_error():
                                 for _ in range(120): # 60s
-                                    if await page.get_by_text("獲取數據失敗").count() > 0 or await page.get_by_text("Please Try Again").count() > 0:
-                                        return True
+                                    # Check CN Toast
+                                    t_cn = page.get_by_text("獲取數據失敗")
+                                    if await t_cn.count() > 0:
+                                        msg = await t_cn.first.text_content()
+                                        return msg
+                                    
+                                    # Check EN Toast
+                                    t_en = page.get_by_text("Please Try Again")
+                                    if await t_en.count() > 0:
+                                        msg = await t_en.first.text_content()
+                                        return msg
+                                        
                                     if download_task.done():
-                                        return False
+                                        return None
                                     await asyncio.sleep(0.5)
-                                return False
+                                return None
 
                             error_task = asyncio.create_task(check_error())
                             
                             done, pending = await asyncio.wait([download_task, error_task], return_when=asyncio.FIRST_COMPLETED)
                             
-                            if error_task in done and error_task.result():
-                                # Error detected
-                                raise Exception("Server indicated failure (Toast detected) during download.")
+                            if error_task in done:
+                                error_msg = error_task.result()
+                                if error_msg:
+                                    # Error detected
+                                    raise Exception(f"Server indicated failure (Toast detected): {error_msg}")
                             
                             # If we are here, either download is done OR timeout (handled by expect_download internal timeout usually? No, we need to await download_task)
                             if not download_task.done():
@@ -433,7 +546,7 @@ class LietaScraper:
                 break # Success, break retry loop
 
             except Exception as e:
-                self.log(f"[{model}] {ticker} - Attempt {attempt+1} failed: {e}")
+                self.log(f"[{model}] {ticker} - Attempt {attempt+1}/{max_retries} failed: {e}")
                 if attempt == max_retries - 1:
                     self.log(f"[{model}] {ticker} - Skipped after retries.")
                     self.failed_items.append(f"[{model}] {ticker}")
