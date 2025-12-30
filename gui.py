@@ -30,6 +30,7 @@ class LietaApp(ctk.CTk):
         
         self.current_log_file = None
         self.last_run_date = None
+        self.last_failed_tasks = []  # Store failed tasks for retry
         self.check_schedule()
 
     def check_schedule(self):
@@ -195,6 +196,9 @@ class LietaApp(ctk.CTk):
         self.btn_stop = ctk.CTkButton(self.action_frame, text="STOP", fg_color="#FF4D4D", hover_color="#CC0000", state="disabled", height=40, font=("", 14, "bold"), command=self.on_stop)
         self.btn_stop.pack(side="right", padx=(10, 0), expand=True, fill="x")
 
+        self.btn_retry = ctk.CTkButton(self.action_frame, text="RETRY FAILED", fg_color="#FFA500", hover_color="#FF8C00", state="disabled", height=40, font=("", 14, "bold"), command=self.on_retry)
+        self.btn_retry.pack(side="right", padx=(10, 0), expand=True, fill="x")
+
         # 6. Console
         self.console_label = ctk.CTkLabel(self.main_frame, text="Logs:")
         self.console_label.grid(row=5, column=0, columnspan=2, sticky="w", padx=20)
@@ -287,7 +291,9 @@ class LietaApp(ctk.CTk):
         browser_type = self.var_browser.get()
 
         self.btn_start.configure(state="disabled")
+        self.btn_retry.configure(state="disabled")
         self.btn_stop.configure(state="normal")
+        self.last_failed_tasks = [] # Clear previous failures
         
         # Setup Logger for this run
         os.makedirs("logs", exist_ok=True)
@@ -302,7 +308,7 @@ class LietaApp(ctk.CTk):
         self.scraper_instance = LietaScraper(logger_func=self.log_safe, browser_type=browser_type)
         try:
             # Fix: Run everything in one asyncio loop to preserve browser connection
-            asyncio.run(self.scraper_instance.perform_full_job(tickers, models, cme_tickers, cme_models, download_folder, parallel))
+            self.last_failed_tasks = asyncio.run(self.scraper_instance.perform_full_job(tickers, models, cme_tickers, cme_models, download_folder, parallel))
         except Exception as e:
             self.log_safe(f"Job Critical Error: {e}")
         finally:
@@ -312,7 +318,14 @@ class LietaApp(ctk.CTk):
     def _job_finished(self):
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
-        self.log("Ready.")
+        
+        if self.last_failed_tasks:
+            self.btn_retry.configure(state="normal")
+            self.log(f"Job finished with {len(self.last_failed_tasks)} failures. You can Retry Failed items.")
+        else:
+            self.btn_retry.configure(state="disabled")
+            self.log("Job finished successfully.")
+            
         self.current_log_file = None
 
     
@@ -325,6 +338,39 @@ class LietaApp(ctk.CTk):
             
             # If we were using proper asyncio loop integration in GUI we could cancel task.
             # With threading, we rely on the flag check inside scraper logic.
+
+    def on_retry(self):
+        if not self.last_failed_tasks:
+            self.log("No failed items to retry.")
+            return
+
+        self.btn_start.configure(state="disabled")
+        self.btn_retry.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
+
+        browser_type = self.var_browser.get()
+        parallel = self.var_parallel.get()
+        
+        # Setup Logger for this run
+        os.makedirs("logs", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.current_log_file = os.path.join("logs", f"retry_{timestamp}.log")
+        self.log(f"Starting RETRY job... ({len(self.last_failed_tasks)} items) Browser: {browser_type}")
+
+        threading.Thread(target=self._run_retry_thread, args=(self.last_failed_tasks, self.download_folder, parallel, browser_type), daemon=True).start()
+
+    def _run_retry_thread(self, failed_tasks, download_folder, parallel, browser_type):
+        self.scraper_instance = LietaScraper(logger_func=self.log_safe, browser_type=browser_type)
+        try:
+            # Run retry job
+            # returns new failed tasks (if any failed again)
+            new_failures = asyncio.run(self.scraper_instance.perform_retry_job(failed_tasks, download_folder, parallel))
+            self.last_failed_tasks = new_failures
+        except Exception as e:
+            self.log_safe(f"Retry Job Critical Error: {e}")
+        finally:
+            self.scraper_instance = None
+            self.after(0, self._job_finished)
 
 
     def log(self, message):

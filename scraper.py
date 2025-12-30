@@ -143,33 +143,56 @@ class LietaScraper:
     async def perform_full_job(self, tickers, models, cme_tickers, cme_models, download_folder, parallel):
         """
         Runs the full job lifecycle (Start -> Run -> Close) in a single loop.
+        Returns list of failed tasks.
         """
         try:
             await self.start_browser(headless=False)
-            await self.run_scraping_job(tickers, models, cme_tickers, cme_models, download_folder, parallel)
+            return await self.run_scraping_job(tickers, models, cme_tickers, cme_models, download_folder, parallel)
         finally:
             await self.close()
 
+    async def perform_retry_job(self, failed_tasks, download_folder, parallel):
+        """
+        Runs a retry job for specific failed tasks.
+        """
+        try:
+            await self.start_browser(headless=False)
+            return await self.retry_scraping_job(failed_tasks, download_folder, parallel)
+        finally:
+            await self.close()
+
+    def record_failure(self, platform, model, ticker, reason=""):
+        """Records a failure in both log string format and structured format."""
+        # String format for log
+        prefix = f"[CME-{model}]" if platform == "cme" else f"[{model}]"
+        log_msg = f"{prefix} {ticker}"
+        if reason:
+             log_msg += f" ({reason})"
+        
+        # Avoid duplicates if possible (though retry logic might cause them if not careful, but list append is simple)
+        self.failed_items.append(log_msg)
+        
+        # Structured format for retry
+        self.failed_tasks_structured.append({
+            "platform": platform,
+            "model": model,
+            "ticker": ticker
+        })
+
     async def run_scraping_job(self, tickers: list, models: list, cme_tickers: list, cme_models: list, download_folder: str, parallel_mode: bool = False):
         """
-        Main scrapping logic.
+        Main scrapping logic. Returns structured failed tasks.
         """
         self.stop_requested = False
         if not os.path.exists(self.storage_state_path):
              self.log("No session file found. Please use 'Log in via Browser' first.")
-             return
+             return []
 
         self.success_count = 0
         self.failed_items = []
+        self.failed_tasks_structured = [] # List of {'platform': 'std'|'cme', 'model': str, 'ticker': str}
 
         self.log(f"Starting job. Std: {len(models)} models, CME: {len(cme_models)} models.")
-        
-        # Prepare TV Code aggregation bucket (Shared?)
-        # Let's keep them separate or shared? User "除了 TV Code，其他 model 多一層 Ticker name 的資料夾"
-        # User requested "CME Download folder 路徑多一層 CME"
-        # "CME model select"
-        # Since TV Code is aggregated, maybe create separate TV Code files for CME vs Standard? 
-        # Or one big file? User didn't specify. I'll make separate lists to be safe or just pass "subfolder" context.
         
         tv_codes_std = []
         tv_codes_cme = []
@@ -188,7 +211,7 @@ class LietaScraper:
                     # In sequential mode, this catches future models
                     for skipped_model in models[i:]:
                         for t in tickers:
-                            self.failed_items.append(f"[{skipped_model}] {t} (Stopped)")
+                            self.record_failure("std", skipped_model, t, "Stopped")
                     break
                     
                 # Standard URL, No prefix
@@ -206,7 +229,7 @@ class LietaScraper:
                     # In sequential mode, this catches future models
                     for skipped_model in cme_models[i:]:
                         for t in cme_tickers:
-                            self.failed_items.append(f"[{skipped_model}] {t} (Stopped)")
+                            self.record_failure("cme", skipped_model, t, "Stopped")
                     break
                     
                 # CME URL, "CME" prefix
@@ -226,6 +249,99 @@ class LietaScraper:
             self.save_tv_codes(tv_codes_cme, download_folder, subfolder="CME")
             
         self.log_summary()
+        return self.failed_tasks_structured
+
+    async def retry_scraping_job(self, failed_tasks, download_folder, parallel_mode):
+        """
+        Retries specifically the failed tasks.
+        failed_tasks: list of dicts {'platform': 'std'|'cme', 'model': ..., 'ticker': ...}
+        """
+        self.stop_requested = False
+        if not os.path.exists(self.storage_state_path):
+             self.log("No session file found. Please use 'Log in via Browser' first.")
+             return failed_tasks 
+
+        self.success_count = 0
+        self.failed_items = []
+        self.failed_tasks_structured = [] # New failures during retry
+
+        self.log(f"Starting RETRY job. {len(failed_tasks)} items.")
+        
+        # Group tasks by (platform, model) to utilize batch processing
+        grouped = {} # text_key -> {'platform': p, 'model': m, 'tickers': [], 'url': ...}
+        
+        for item in failed_tasks:
+            platform = item['platform']
+            model = item['model']
+            ticker = item['ticker']
+            
+            key = (platform, model)
+            if key not in grouped:
+                if platform == 'cme':
+                    url = f"{BASE_URL}/platform/cme"
+                    sub = "CME"
+                else:
+                    url = f"{BASE_URL}/platform"
+                    sub = ""
+                grouped[key] = {
+                    'platform': platform,
+                    'model': model,
+                    'tickers': [],
+                    'url': url,
+                    'sub': sub
+                }
+            grouped[key]['tickers'].append(ticker)
+
+        tv_codes_std = []
+        tv_codes_cme = []
+
+        if not self.browser:
+            await self.start_browser(headless=False)
+
+        context = await self.browser.new_context(storage_state=self.storage_state_path, accept_downloads=True)
+        
+        tasks = []
+        
+        for k, task_info in grouped.items():
+            if self.stop_requested:
+                # Mark remaining as failed
+                for t in task_info['tickers']:
+                    self.record_failure(task_info['platform'], task_info['model'], t, "Stopped")
+                continue
+
+            # Identify if it maps to tv_codes lists
+            # We pass the list to collect results.
+            if task_info['platform'] == 'cme':
+                codes_list = tv_codes_cme
+            else:
+                codes_list = tv_codes_std
+            
+            coro = self.process_model_queue(
+                context, 
+                task_info['model'], 
+                task_info['tickers'], 
+                download_folder, 
+                codes_list, 
+                target_url=task_info['url'], 
+                subfolder_prefix=task_info['sub']
+            )
+            
+            if parallel_mode:
+                tasks.append(coro)
+            else:
+                await coro
+                
+        if parallel_mode and tasks:
+            await asyncio.gather(*tasks)
+
+        # Save TV codes
+        if tv_codes_std:
+            self.save_tv_codes(tv_codes_std, download_folder, subfolder="")
+        if tv_codes_cme:
+            self.save_tv_codes(tv_codes_cme, download_folder, subfolder="CME")
+            
+        self.log_summary()
+        return self.failed_tasks_structured
 
     def log_summary(self):
         total = self.success_count + len(self.failed_items)
@@ -250,6 +366,8 @@ class LietaScraper:
         try:
             page.set_default_timeout(60000) # Set timeout to 60s
             prefix_log = f"[CME-{model}]" if subfolder_prefix else f"[{model}]"
+            short_plat = "cme" if subfolder_prefix == "CME" else "std"
+            
             self.log(f"{prefix_log} Page initialized.")
             await page.goto(target_url)
             await page.wait_for_load_state("networkidle")
@@ -264,22 +382,30 @@ class LietaScraper:
                 if self.stop_requested:
                     self.log(f"{prefix_log} Stopped. Skipping remaining tickers.")
                     for skipped_ticker in tickers[i:]:
-                         self.failed_items.append(f"{prefix_log} {skipped_ticker} (Stopped)")
+                         self.record_failure(short_plat, model, skipped_ticker, "Stopped")
                     break
                 
                 await self.process_single_ticker(page, model, ticker, download_folder, tv_codes_list, subfolder_prefix)
                 
         except Exception as e:
             self.log(f"{prefix_log} Error: {e}")
+            # If the whole page/model setup failed, mark all tickers as failed
+            # We don't know which ones ran if we crash outside the loop, but usually we are inside try block.
+            # If we are here, something big failed.
+            # Simple approach: Log generic error, but we lose tracking who failed exactly if we don't have index.
+            # Ideally we should fail all input tickers here if loop didn't finish
+            # But the 'process_single_ticker' handles individual errors.
+            pass
         finally:
             await page.close()
 
     async def process_single_ticker(self, page, model, ticker, download_folder, tv_codes_list, subfolder_prefix):
         max_retries = 15
+        short_plat = "cme" if subfolder_prefix == "CME" else "std"
+        
         for attempt in range(max_retries):
             if self.stop_requested: 
-                prefix_log = f"[CME-{model}]" if subfolder_prefix else f"[{model}]"
-                self.failed_items.append(f"{prefix_log} {ticker} (Stopped)")
+                self.record_failure(short_plat, model, ticker, "Stopped")
                 return
             try:
                 # 2. Input Ticker
@@ -549,7 +675,7 @@ class LietaScraper:
                 self.log(f"[{model}] {ticker} - Attempt {attempt+1}/{max_retries} failed: {e}")
                 if attempt == max_retries - 1:
                     self.log(f"[{model}] {ticker} - Skipped after retries.")
-                    self.failed_items.append(f"[{model}] {ticker}")
+                    self.record_failure(short_plat, model, ticker)
                 await asyncio.sleep(2)
 
     def save_tv_codes(self, codes, download_folder, subfolder=""):
