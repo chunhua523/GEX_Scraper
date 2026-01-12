@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 from scraper import LietaScraper
 import utils
+from tkcalendar import Calendar
 # from scraper import LietaScraper
 
 class LietaApp(ctk.CTk):
@@ -164,7 +165,7 @@ class LietaApp(ctk.CTk):
         self.lbl_dl_path.grid(row=1, column=1, padx=5, pady=(5, 10), sticky="w")
 
         # Row 2: View Files Button (New)
-        self.btn_view_files = ctk.CTkButton(self.global_frame, text="📂 View Today's Files", command=self.open_file_viewer, width=180)
+        self.btn_view_files = ctk.CTkButton(self.global_frame, text="📂 View Scraped Files", command=self.open_file_viewer, width=180)
         self.btn_view_files.grid(row=2, column=0, padx=15, pady=5, sticky="w")
 
         # Row 3: Parallel Switch
@@ -455,7 +456,7 @@ class LietaApp(ctk.CTk):
             
     def open_file_viewer(self):
         """
-        Opens a Toplevel window to list and open files downloaded today.
+        Opens a Toplevel window to list and open files for a specific date (defaults to today).
         Optimized with filename string matching and SegmentedButton for model selection.
         """
         if not hasattr(self, 'download_folder') or not self.download_folder or not os.path.exists(self.download_folder):
@@ -465,106 +466,71 @@ class LietaApp(ctk.CTk):
 
         # Create Window
         window = ctk.CTkToplevel(self)
-        window.title("Today's Downloaded Files")
-        window.geometry("700x600")
-        window.attributes("-topmost", True) # Keep on top
-
-        # Fast Filtering: Use datestring in filename instead of os.stat
-        today_str = datetime.now().strftime("%Y%m%d")
+        window.title("View Downloaded Files")
+        window.geometry("950x650") # Wider for side-by-side layout
         
-        # Grouping: grouped_files[model_name] = { ticker_name: (filepath, time_obj) }
+        # Make this window transient to the main window
+        window.transient(self)
+        window.lift()
+        window.focus_force()
+
+        # Grid Layout Configuration: 2 Columns
+        window.grid_columnconfigure(1, weight=1) # Content area expands
+        window.grid_rowconfigure(0, weight=1)
+
+        # === LEFT SIDEBAR (Controls) ===
+        left_panel = ctk.CTkFrame(window, width=280, corner_radius=0)
+        left_panel.grid(row=0, column=0, sticky="nsew")
+        left_panel.grid_columnconfigure(0, weight=1)
+        
+        # Title in Sidebar
+        ctk.CTkLabel(left_panel, text="Control Panel", font=("", 18, "bold"), text_color="#DCE4EE").pack(pady=(20, 10))
+
+        # Calendar Widget
+        cal_container = ctk.CTkFrame(left_panel, fg_color="transparent")
+        cal_container.pack(padx=10, pady=5)
+        
+        ctk.CTkLabel(cal_container, text="Select Date:", font=("", 14), anchor="w").pack(fill="x", pady=(0,5))
+        cal = Calendar(cal_container, selectmode='day', date_pattern='yyyy-mm-dd',
+                       font=('Arial', 16), cursor="hand2")
+        cal.pack()
+        
+        def go_today():
+            today = datetime.now()
+            cal.selection_set(today)
+            # cal.see(today) # see is not always available or needed if month updates automatically on set
+            
+        btn_today = ctk.CTkButton(cal_container, text="Today", width=80, height=24, 
+                                  fg_color="transparent", border_width=1, border_color="gray",
+                                  command=go_today)
+        btn_today.pack(pady=(5, 0))
+
+        # Load Folder Logic & Status
         grouped_files = {} 
-        files_found_count = 0
-
-        try:
-            for root, dirs, files in os.walk(self.download_folder):
-                 for file in files:
-                      # Check if file has today's date string (Fastest check)
-                      if today_str in file and file.endswith(('.html', '.txt', '.csv', '.pdf', '.png')):
-                          fp = os.path.join(root, file)
-                          
-                          try:
-                                # Parsing structure
-                                rel_path = os.path.relpath(fp, self.download_folder)
-                                parts = rel_path.split(os.sep)
-                                
-                                model_name = "Other"
-                                ticker_name = file # Default
-                                
-                                # Heuristics
-                                if parts[0] == "CME":
-                                    if len(parts) >= 3:
-                                        model_name = f"CME - {parts[1]}"
-                                        ticker_name = parts[2]
-                                    elif "TV Code" in parts or file.lower().startswith("tv_codes"):
-                                        model_name = "CME - TV Code"
-                                        ticker_name = f"File_{file}" # Unique key to keep all files
-                                else:
-                                    if len(parts) >= 2:
-                                        model_name = parts[0]
-                                        ticker_name = parts[1]
-                                    elif "TV Code" in parts or file.lower().startswith("tv_codes"): # Standard TV Code
-                                        model_name = "TV Code"
-                                        ticker_name = f"File_{file}"
-
-                                # Extract time from filename for sorting? 
-                                # Filename format: ..._YYYYMMDD_HHMMSS.ext
-                                # Regex extract HHMMSS
-                                try:
-                                    time_part = file.split(today_str + "_")[1].split(".")[0]
-                                    # Basic check if it looks like time
-                                    if len(time_part) >= 6:
-                                        dt_time = datetime.strptime(time_part[:6], "%H%M%S")
-                                    else:
-                                        dt_time = datetime.now() # Fallback
-                                except:
-                                    # Fallback to mtime if regex fails (slower but rare)
-                                    mnow = os.path.getmtime(fp)
-                                    dt_time = datetime.fromtimestamp(mnow)
-                                
-                                if model_name not in grouped_files:
-                                    grouped_files[model_name] = {}
-                                
-                                # Keep latest file for this ticker
-                                if ticker_name not in grouped_files[model_name] or dt_time > grouped_files[model_name][ticker_name][1]:
-                                    grouped_files[model_name][ticker_name] = (fp, dt_time)
-                                    
-                          except Exception:
-                              pass
-        except Exception as e:
-            self.log_safe(f"Error scanning files: {e}")
-
-        # Flatten for count
-        total_files = sum(len(v) for v in grouped_files.values())
+        file_vars = [] 
         
-        # Sort models
-        sorted_models = sorted(grouped_files.keys())
-        if not sorted_models:
-             sorted_models = ["No Data"]
-
-        # --- UI UI UI ---
+        # Status Label (Moved to Sidebar)
+        lbl_status = ctk.CTkLabel(left_panel, text="Ready", font=("", 13), text_color="gray")
+        # Kept pack later for button placement flow
         
-        # 1. Top Bar: Model Selector (Segmented Button)
-        top_frame = ctk.CTkFrame(window, fg_color="transparent")
-        top_frame.pack(fill="x", padx=20, pady=(15, 5))
-        
-        ctk.CTkLabel(top_frame, text=f"Found {total_files} files (Today)", font=("", 14, "bold")).pack(anchor="w", padx=5)
+        # === RIGHT MAIN AREA (Content) ===
+        right_panel = ctk.CTkFrame(window, fg_color="transparent")
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        right_panel.grid_rowconfigure(1, weight=1) # Scroll list expands
+        right_panel.grid_columnconfigure(0, weight=1)
 
-        # Segmented Button
-        # Logic: If too many models, might look crowded. But usually ~5-10 models max.
-        self.seg_models = ctk.CTkSegmentedButton(top_frame, values=sorted_models, command=lambda v: update_list(v))
-        self.seg_models.pack(pady=10, fill="x")
-        if sorted_models[0] != "No Data":
-            self.seg_models.set(sorted_models[0]) # Select first
+        # 1. Model Selector (Top of Right)
+        seg_models = ctk.CTkSegmentedButton(right_panel)
+        seg_models.grid(row=0, column=0, sticky="ew", pady=(0, 15))
 
-        # 2. List Area
-        scroll_frame = ctk.CTkScrollableFrame(window, width=640, height=400)
-        scroll_frame.pack(fill="both", expand=True, padx=20, pady=5)
+        # 2. List Area (Middle of Right)
+        scroll_frame = ctk.CTkScrollableFrame(right_panel)
+        scroll_frame.grid(row=1, column=0, sticky="nsew")
         
-        file_vars = [] # (BooleanVar, filepath)
+        # --- Logic Functions ---
 
         def update_list(selected_model):
-            # Clear existing
+            # Clear existing list items
             for widget in scroll_frame.winfo_children():
                 widget.destroy()
             file_vars.clear()
@@ -619,12 +585,6 @@ class LietaApp(ctk.CTk):
                         content = merged_tv_items[t_label]
                         var = ctk.BooleanVar(value=False)
                         
-                        # Container (Compact: just the checkbox line)
-                        # chk = ctk.CTkCheckBox(scroll_frame, text=f"{t_label}", variable=var, font=("", 14, "bold"), width=100)
-                        # chk.pack(anchor="w", padx=20, pady=2, fill="x")
-
-                        # Using a Frame to keep alignment consistent if we add more info later, but for now just Checkbox is fine.
-                        # Actually let's use the frame for margin consistecy with previous code style
                         item_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
                         item_frame.pack(fill="x", pady=2)
 
@@ -650,9 +610,96 @@ class LietaApp(ctk.CTk):
                 chk.pack(anchor="w", padx=10, pady=2, fill="x")
                 file_vars.append((var, fp))
 
-        # 3. Bottom Actions
-        btn_frame = ctk.CTkFrame(window, fg_color="transparent")
-        btn_frame.pack(pady=15, fill="x")
+        def load_files():
+            try:
+                # Calendar.get_date() returns a string based on date_pattern
+                date_str = cal.get_date()
+                target_date = datetime.strptime(date_str, "%Y-%m-%d")
+                
+                search_str = target_date.strftime("%Y%m%d") # Format used in filenames
+            except Exception as e:
+                import tkinter.messagebox
+                tkinter.messagebox.showerror("Error", f"Invalid date: {e}")
+                return
+
+            grouped_files.clear()
+            
+            # Scan logic
+            try:
+                for root, dirs, files in os.walk(self.download_folder):
+                     for file in files:
+                          # Check if file has target date string
+                          if search_str in file and file.endswith(('.html', '.txt', '.csv', '.pdf', '.png')):
+                              fp = os.path.join(root, file)
+                              try:
+                                    # Parsing structure
+                                    rel_path = os.path.relpath(fp, self.download_folder)
+                                    parts = rel_path.split(os.sep)
+                                    
+                                    model_name = "Other"
+                                    ticker_name = file # Default
+                                    
+                                    # Heuristics
+                                    if parts[0] == "CME":
+                                        if len(parts) >= 3:
+                                            model_name = f"CME - {parts[1]}"
+                                            ticker_name = parts[2]
+                                        elif "TV Code" in parts or file.lower().startswith("tv_codes"):
+                                            model_name = "CME - TV Code"
+                                            ticker_name = f"File_{file}" # Unique key to keep all files
+                                    else:
+                                        if len(parts) >= 2:
+                                            model_name = parts[0]
+                                            ticker_name = parts[1]
+                                        elif "TV Code" in parts or file.lower().startswith("tv_codes"): # Standard TV Code
+                                            model_name = "TV Code"
+                                            ticker_name = f"File_{file}"
+    
+                                    # Extract time from filename
+                                    try:
+                                        time_part = file.split(search_str + "_")[1].split(".")[0]
+                                        if len(time_part) >= 6:
+                                            dt_time = datetime.strptime(time_part[:6], "%H%M%S")
+                                        else:
+                                            dt_time = datetime.now() # Fallback
+                                    except:
+                                        mnow = os.path.getmtime(fp)
+                                        dt_time = datetime.fromtimestamp(mnow)
+                                    
+                                    if model_name not in grouped_files:
+                                        grouped_files[model_name] = {}
+                                    
+                                    # Keep latest file for this ticker
+                                    if ticker_name not in grouped_files[model_name] or dt_time > grouped_files[model_name][ticker_name][1]:
+                                        grouped_files[model_name][ticker_name] = (fp, dt_time)
+                                        
+                              except Exception:
+                                  pass
+            except Exception as e:
+                print(f"Error scanning files: {e}")
+
+            # Update UI Status
+            total_files = sum(len(v) for v in grouped_files.values())
+            lbl_status.configure(text=f"Found {total_files} files ({date_str})")
+            
+            sorted_models = sorted(grouped_files.keys())
+            if not sorted_models:
+                 sorted_models = ["No Data"]
+
+            seg_models.configure(values=sorted_models, command=lambda v: update_list(v))
+            seg_models.set(sorted_models[0])
+            update_list(sorted_models[0])
+
+        # Button in Sidebar
+        btn_refresh = ctk.CTkButton(left_panel, text="Load / Refresh Files", width=180, height=35, 
+                                    font=("", 14, "bold"), fg_color="#3B8ED0", hover_color="#36719F",
+                                    command=lambda: load_files())
+        btn_refresh.pack(pady=(20, 10))
+        lbl_status.pack(pady=5)
+
+        # --- Bottom Actions (Bottom of Right Panel) ---
+        btn_frame = ctk.CTkFrame(right_panel, fg_color="transparent")
+        btn_frame.grid(row=2, column=0, sticky="ew", pady=(15, 0))
 
         def select_all():
              for v, _ in file_vars: v.set(True)
@@ -684,24 +731,15 @@ class LietaApp(ctk.CTk):
                     
                     with os.fdopen(fd, 'w', encoding='utf-8') as tmp:
                         for _, t_label, content in tv_data_to_show:
-                            # Clean content: Remove "Ticker:" prefix if it exists to avoid redundancy
-                            # content is the raw line, e.g. "AAOI: Put Dominate..."
                             clean_content = content
                             prefix = f"{t_label}:"
                             if clean_content.startswith(prefix):
                                 clean_content = clean_content[len(prefix):].strip()
-                            elif clean_content.startswith(t_label): # Just ticker space?
+                            elif clean_content.startswith(t_label):
                                 clean_content = clean_content[len(t_label):].strip()
-                            
-                            # Format:
-                            # AAOI:
-                            # 
-                            # Put Dominate...
-                            # 
                             
                             tmp.write(f"{t_label}:\n\n")
                             tmp.write(f"{clean_content}\n\n")
-                            
                             
                     self.open_file_cross_platform(path)
                 except Exception as e:
@@ -711,9 +749,8 @@ class LietaApp(ctk.CTk):
         ctk.CTkButton(btn_frame, text="Deselect All", command=deselect_all, width=120).pack(side="left", padx=5)
         ctk.CTkButton(btn_frame, text="Open Selected", command=open_selected, width=150, fg_color="#2CC985", hover_color="#229C68", text_color="white").pack(side="right", padx=20)
 
-        # Init list
-        if sorted_models[0] != "No Data":
-            update_list(sorted_models[0])
+        # Init list with default date
+        load_files()
 
     def open_file_cross_platform(self, filepath):
         import subprocess, sys, platform
