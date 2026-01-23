@@ -101,12 +101,21 @@ class LietaApp(ctk.CTk):
         
         # Standard Ticker Row
         self.std_ticker_row = ctk.CTkFrame(self.std_frame, fg_color="transparent")
-        self.std_ticker_row.pack(padx=0, pady=5, fill="x", anchor="w")
+        self.std_ticker_row.pack(padx=15, pady=5, fill="x", anchor="w")
         
-        self.btn_ticker_file = ctk.CTkButton(self.std_ticker_row, text="Select Ticker List", command=self.select_ticker_file, width=140)
-        self.btn_ticker_file.grid(row=0, column=0, padx=15, sticky="w")
-        self.lbl_ticker_file = ctk.CTkLabel(self.std_ticker_row, text="No file selected", font=("", 12), text_color="#DCE4EE")
-        self.lbl_ticker_file.grid(row=0, column=1, padx=5, sticky="w")
+        # Row 1: Select button and Manage button
+        btn_row = ctk.CTkFrame(self.std_ticker_row, fg_color="transparent")
+        btn_row.pack(fill="x", pady=(0, 2))
+        
+        self.btn_ticker_file = ctk.CTkButton(btn_row, text="Select Ticker List", command=self.select_ticker_file, width=140)
+        self.btn_ticker_file.pack(side="left")
+        
+        self.btn_manage_tickers = ctk.CTkButton(btn_row, text="✏️ Manage", command=self.open_ticker_manager_std, width=100, fg_color="transparent", border_width=1, border_color="gray")
+        self.btn_manage_tickers.pack(side="left", padx=(5, 0))
+        
+        # Row 2: File name label
+        self.lbl_ticker_file = ctk.CTkLabel(self.std_ticker_row, text="No file selected", font=("", 11), text_color="#DCE4EE", anchor="w")
+        self.lbl_ticker_file.pack(fill="x", pady=(0, 0))
 
         # Standard Models Grid
         ctk.CTkLabel(self.std_frame, text="Models:", font=("", 13, "bold")).pack(padx=15, pady=(5,0), anchor="w")
@@ -131,12 +140,21 @@ class LietaApp(ctk.CTk):
 
         # CME Ticker Row
         self.cme_ticker_row = ctk.CTkFrame(self.cme_frame, fg_color="transparent")
-        self.cme_ticker_row.pack(padx=0, pady=5, fill="x", anchor="w")
+        self.cme_ticker_row.pack(padx=15, pady=5, fill="x", anchor="w")
 
-        self.btn_cme_ticker = ctk.CTkButton(self.cme_ticker_row, text="Select CME Ticker List", command=self.select_cme_ticker_file, width=140)
-        self.btn_cme_ticker.grid(row=0, column=0, padx=15, sticky="w")
-        self.lbl_cme_ticker = ctk.CTkLabel(self.cme_ticker_row, text="No file selected", font=("", 12), text_color="#DCE4EE")
-        self.lbl_cme_ticker.grid(row=0, column=1, padx=5, sticky="w")
+        # Row 1: Select button and Manage button
+        cme_btn_row = ctk.CTkFrame(self.cme_ticker_row, fg_color="transparent")
+        cme_btn_row.pack(fill="x", pady=(0, 2))
+
+        self.btn_cme_ticker = ctk.CTkButton(cme_btn_row, text="Select CME Ticker List", command=self.select_cme_ticker_file, width=140)
+        self.btn_cme_ticker.pack(side="left")
+        
+        self.btn_manage_cme_tickers = ctk.CTkButton(cme_btn_row, text="✏️ Manage", command=self.open_ticker_manager_cme, width=100, fg_color="transparent", border_width=1, border_color="gray")
+        self.btn_manage_cme_tickers.pack(side="left", padx=(5, 0))
+        
+        # Row 2: File name label
+        self.lbl_cme_ticker = ctk.CTkLabel(self.cme_ticker_row, text="No file selected", font=("", 11), text_color="#DCE4EE", anchor="w")
+        self.lbl_cme_ticker.pack(fill="x", pady=(0, 0))
 
         # CME Models Grid
         ctk.CTkLabel(self.cme_frame, text="Models:", font=("", 13, "bold")).pack(padx=15, pady=(5,0), anchor="w")
@@ -495,10 +513,13 @@ class LietaApp(ctk.CTk):
                        font=('Arial', 16), cursor="hand2")
         cal.pack()
         
+        # Bind calendar selection change to auto-load files
+        cal.bind("<<CalendarSelected>>", lambda e: load_files())
+        
         def go_today():
             today = datetime.now()
             cal.selection_set(today)
-            # cal.see(today) # see is not always available or needed if month updates automatically on set
+            load_files()  # Auto-load when clicking Today button
             
         btn_today = ctk.CTkButton(cal_container, text="Today", width=80, height=24, 
                                   fg_color="transparent", border_width=1, border_color="gray",
@@ -543,6 +564,19 @@ class LietaApp(ctk.CTk):
             
             # Special Handling for TV Code categories
             if "TV Code" in selected_model:
+                # Load ticker groups
+                ticker_groups_std = {}
+                ticker_groups_cme = {}
+                
+                if hasattr(self, 'ticker_filepath') and self.ticker_filepath and os.path.exists(self.ticker_filepath):
+                    ticker_groups_std = utils.load_tickers_with_groups(self.ticker_filepath)
+                
+                if hasattr(self, 'cme_ticker_filepath') and self.cme_ticker_filepath and os.path.exists(self.cme_ticker_filepath):
+                    ticker_groups_cme = utils.load_tickers_with_groups(self.cme_ticker_filepath)
+                
+                # Determine which ticker groups to use based on model
+                ticker_groups = ticker_groups_cme if "CME" in selected_model else ticker_groups_std
+                
                 # 1. Collect all files and sort by time (Oldest -> Newest) so latest overwrites earlier
                 tv_files = []
                 for file_key in tickers:
@@ -579,36 +613,305 @@ class LietaApp(ctk.CTk):
 
                     if not merged_tv_items:
                          ctk.CTkLabel(scroll_frame, text="No content found in TV Code files.", text_color="gray").pack(pady=20)
+                         return
 
-                    # Display Unique Tickers (Sorted)
-                    for t_label in sorted(merged_tv_items.keys()):
-                        content = merged_tv_items[t_label]
-                        var = ctk.BooleanVar(value=False)
+                    # Group TV tickers by their groups
+                    grouped_tv = {}  # group_name -> [(ticker, content)]
+                    ungrouped_tv = []  # Tickers without a group
+                    
+                    for ticker in sorted(merged_tv_items.keys()):
+                        content = merged_tv_items[ticker]
                         
-                        item_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
-                        item_frame.pack(fill="x", pady=2)
+                        # Find which group this ticker belongs to
+                        found_group = None
+                        for group_name, ticker_list in ticker_groups.items():
+                            if ticker in ticker_list:
+                                found_group = group_name
+                                break
+                        
+                        if found_group:
+                            if found_group not in grouped_tv:
+                                grouped_tv[found_group] = []
+                            grouped_tv[found_group].append((ticker, content))
+                        else:
+                            ungrouped_tv.append((ticker, content))
+                    
+                    # Display grouped TV tickers with collapsible frames
+                    for group_name in sorted(grouped_tv.keys()):
+                        group_items = grouped_tv[group_name]
+                        
+                        # Container for this group (header + content)
+                        group_container = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+                        group_container.pack(fill="x", padx=10, pady=(10, 5))
+                        
+                        # Group header frame
+                        group_header = ctk.CTkFrame(group_container, fg_color=("#3B3B3B", "#2B2B2B"), corner_radius=5)
+                        group_header.pack(fill="x", pady=(0, 2))
+                        
+                        # Group content frame
+                        group_content = ctk.CTkFrame(group_container, fg_color="transparent")
+                        group_content.pack(fill="x", pady=(0, 0))
+                        
+                        # Collapsible state
+                        is_visible = ctk.BooleanVar(value=True)
+                        
+                        # Track checkboxes in this group
+                        tv_group_checkboxes = []
+                        
+                        # Create toggle function
+                        def create_tv_toggle_function(content, visible_var, button):
+                            def toggle():
+                                if visible_var.get():
+                                    content.pack_forget()
+                                    button.configure(text=button.cget("text").replace("▼", "▶"))
+                                    visible_var.set(False)
+                                else:
+                                    content.pack(fill="x", pady=(0, 0))
+                                    button.configure(text=button.cget("text").replace("▶", "▼"))
+                                    visible_var.set(True)
+                            return toggle
+                        
+                        # Header layout: select all button on left, toggle button in middle
+                        btn_select_group = ctk.CTkButton(
+                            group_header,
+                            text="☑",
+                            width=30,
+                            height=28,
+                            command=None,
+                            fg_color="transparent",
+                            hover_color=("#4A4A4A", "#3A3A3A"),
+                            font=("", 16)
+                        )
+                        btn_select_group.pack(side="left", padx=(5, 0), pady=5)
+                        
+                        header_middle = ctk.CTkFrame(group_header, fg_color="transparent")
+                        header_middle.pack(side="left", fill="x", expand=True)
+                        
+                        toggle_btn = ctk.CTkButton(
+                            header_middle,
+                            text=f"▼ {group_name} ({len(group_items)} tickers)",
+                            command=None,
+                            fg_color="transparent",
+                            hover_color=("#4A4A4A", "#3A3A3A"),
+                            anchor="w",
+                            font=("", 13, "bold")
+                        )
+                        toggle_btn.pack(side="left", fill="x", expand=True, padx=5, pady=5)
+                        toggle_btn.configure(command=create_tv_toggle_function(group_content, is_visible, toggle_btn))
+                        
+                        # Select All button function for this group
+                        def create_tv_group_select_all(checkboxes):
+                            def select_all_group():
+                                all_selected = all(var.get() for var, _ in checkboxes)
+                                new_state = not all_selected
+                                for var, _ in checkboxes:
+                                    var.set(new_state)
+                            return select_all_group
+                        
+                        # Display tickers in group
+                        for t_label, content in group_items:
+                            var = ctk.BooleanVar(value=False)
+                            chk = ctk.CTkCheckBox(group_content, text=f"{t_label}", variable=var, font=("Consolas", 13, "bold"), width=100)
+                            chk.pack(anchor="w", padx=20, pady=1)
+                            file_vars.append((var, ("TV_DATA", t_label, content)))
+                            tv_group_checkboxes.append((var, ("TV_DATA", t_label, content)))
+                        
+                        # Set the select all command
+                        btn_select_group.configure(command=create_tv_group_select_all(tv_group_checkboxes))
+                    
+                    # Display ungrouped TV tickers
+                    if ungrouped_tv:
+                        if grouped_tv:  # Only show header if there are grouped items
+                            other_header = ctk.CTkFrame(scroll_frame, fg_color=("#3B3B3B", "#2B2B2B"), corner_radius=5)
+                            other_header.pack(fill="x", padx=10, pady=(10, 2))
+                            ctk.CTkLabel(
+                                other_header,
+                                text=f"其他 / Other ({len(ungrouped_tv)} tickers)",
+                                font=("", 13, "bold"),
+                                anchor="w"
+                            ).pack(fill="x", padx=10, pady=5)
+                        
+                        for t_label, content in ungrouped_tv:
+                            var = ctk.BooleanVar(value=False)
+                            
+                            item_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+                            item_frame.pack(fill="x", pady=2, padx=10)
 
-                        chk = ctk.CTkCheckBox(item_frame, text=f"{t_label}", variable=var, font=("Consolas", 14, "bold"), width=100)
-                        chk.pack(anchor="w", padx=10)
+                            chk = ctk.CTkCheckBox(item_frame, text=f"{t_label}", variable=var, font=("Consolas", 14, "bold"), width=100)
+                            chk.pack(anchor="w", padx=10)
 
-                        file_vars.append((var, ("TV_DATA", t_label, content)))
+                            file_vars.append((var, ("TV_DATA", t_label, content)))
                         
                 except Exception as e:
                      ctk.CTkLabel(scroll_frame, text=f"Error processing TV Code files: {e}", text_color="red").pack(pady=10)
                 return
 
-            # Normal Files
-            # Sort by Ticker Name
-            for ticker in sorted(tickers.keys()):
+            # Normal Files - Group by Ticker Groups
+            # Try to load ticker groups for organization
+            ticker_groups_std = {}
+            ticker_groups_cme = {}
+            
+            if hasattr(self, 'ticker_filepath') and self.ticker_filepath and os.path.exists(self.ticker_filepath):
+                ticker_groups_std = utils.load_tickers_with_groups(self.ticker_filepath)
+            
+            if hasattr(self, 'cme_ticker_filepath') and self.cme_ticker_filepath and os.path.exists(self.cme_ticker_filepath):
+                ticker_groups_cme = utils.load_tickers_with_groups(self.cme_ticker_filepath)
+            
+            # Determine which ticker groups to use based on model
+            ticker_groups = ticker_groups_cme if "CME" in selected_model else ticker_groups_std
+            
+            # Group tickers by their groups
+            grouped_tickers = {}  # group_name -> [(ticker, filepath, datetime)]
+            ungrouped_tickers = []  # Tickers without a group
+            
+            for ticker in tickers.keys():
                 fp, dt_obj = tickers[ticker]
-                time_str = dt_obj.strftime('%H:%M:%S')
                 
-                var = ctk.BooleanVar(value=False)
+                # Find which group this ticker belongs to
+                found_group = None
+                for group_name, ticker_list in ticker_groups.items():
+                    if ticker in ticker_list:
+                        found_group = group_name
+                        break
                 
-                # Simple clean format
-                chk = ctk.CTkCheckBox(scroll_frame, text=f"[{time_str}]  {ticker}", variable=var, font=("Consolas", 14), height=30, width=500)
-                chk.pack(anchor="w", padx=10, pady=2, fill="x")
-                file_vars.append((var, fp))
+                if found_group:
+                    if found_group not in grouped_tickers:
+                        grouped_tickers[found_group] = []
+                    grouped_tickers[found_group].append((ticker, fp, dt_obj))
+                else:
+                    ungrouped_tickers.append((ticker, fp, dt_obj))
+            
+            # Display grouped tickers with collapsible frames
+            for group_name in sorted(grouped_tickers.keys()):
+                group_items = grouped_tickers[group_name]
+                
+                # Container for this group (header + content)
+                group_container = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+                group_container.pack(fill="x", padx=10, pady=(10, 5))
+                
+                # Group header frame
+                group_header = ctk.CTkFrame(group_container, fg_color=("#3B3B3B", "#2B2B2B"), corner_radius=5)
+                group_header.pack(fill="x", pady=(0, 2))
+                
+                # Group content frame (tickers list) - child of container, not scroll_frame
+                group_content = ctk.CTkFrame(group_container, fg_color="transparent")
+                group_content.pack(fill="x", pady=(0, 0))
+                
+                # Collapsible state
+                is_visible = ctk.BooleanVar(value=True)
+                
+                # Track checkboxes in this group
+                group_checkboxes = []
+                
+                # Create toggle function with proper closure
+                def create_toggle_function(content, visible_var, button):
+                    def toggle():
+                        if visible_var.get():
+                            # Hide content
+                            content.pack_forget()
+                            current_text = button.cget("text")
+                            new_text = current_text.replace("▼", "▶")
+                            button.configure(text=new_text)
+                            visible_var.set(False)
+                        else:
+                            # Show content
+                            content.pack(fill="x", pady=(0, 0))
+                            current_text = button.cget("text")
+                            new_text = current_text.replace("▶", "▼")
+                            button.configure(text=new_text)
+                            visible_var.set(True)
+                    return toggle
+                
+                # Header layout: select all button on left, toggle button in middle
+                btn_select_group = ctk.CTkButton(
+                    group_header,
+                    text="☑",
+                    width=30,
+                    height=28,
+                    command=None,  # Will be set after checkboxes are created
+                    fg_color="transparent",
+                    hover_color=("#4A4A4A", "#3A3A3A"),
+                    font=("", 16)
+                )
+                btn_select_group.pack(side="left", padx=(5, 0), pady=5)
+                
+                header_middle = ctk.CTkFrame(group_header, fg_color="transparent")
+                header_middle.pack(side="left", fill="x", expand=True)
+                
+                toggle_btn = ctk.CTkButton(
+                    header_middle,
+                    text=f"▼ {group_name} ({len(group_items)} tickers)",
+                    command=None,  # Will be set below
+                    fg_color="transparent",
+                    hover_color=("#4A4A4A", "#3A3A3A"),
+                    anchor="w",
+                    font=("", 13, "bold")
+                )
+                toggle_btn.pack(side="left", fill="x", expand=True, padx=5, pady=5)
+                
+                # Set the toggle command
+                toggle_btn.configure(command=create_toggle_function(group_content, is_visible, toggle_btn))
+                
+                # Select All button function for this group
+                def create_group_select_all(checkboxes):
+                    def select_all_group():
+                        all_selected = all(var.get() for var, _ in checkboxes)
+                        new_state = not all_selected
+                        for var, _ in checkboxes:
+                            var.set(new_state)
+                    return select_all_group
+                
+                # Sort tickers in group
+                group_items.sort(key=lambda x: x[0])  # Sort by ticker name
+                
+                for ticker, fp, dt_obj in group_items:
+                    time_str = dt_obj.strftime('%H:%M:%S')
+                    var = ctk.BooleanVar(value=False)
+                    
+                    chk = ctk.CTkCheckBox(
+                        group_content,
+                        text=f"[{time_str}]  {ticker}",
+                        variable=var,
+                        font=("Consolas", 13),
+                        height=28,
+                        width=500
+                    )
+                    chk.pack(anchor="w", padx=20, pady=1, fill="x")
+                    file_vars.append((var, fp))
+                    group_checkboxes.append((var, fp))
+                
+                # Now set the select all command with the populated checkboxes
+                btn_select_group.configure(command=create_group_select_all(group_checkboxes))
+            
+            # Display ungrouped tickers separately if any
+            if ungrouped_tickers:
+                if grouped_tickers:  # Only show header if there are grouped items
+                    other_header = ctk.CTkFrame(scroll_frame, fg_color=("#3B3B3B", "#2B2B2B"), corner_radius=5)
+                    other_header.pack(fill="x", padx=10, pady=(10, 2))
+                    ctk.CTkLabel(
+                        other_header,
+                        text=f"其他 / Other ({len(ungrouped_tickers)} tickers)",
+                        font=("", 13, "bold"),
+                        anchor="w"
+                    ).pack(fill="x", padx=10, pady=5)
+                
+                ungrouped_tickers.sort(key=lambda x: x[0])  # Sort by ticker name
+                
+                for ticker, fp, dt_obj in ungrouped_tickers:
+                    time_str = dt_obj.strftime('%H:%M:%S')
+                    var = ctk.BooleanVar(value=False)
+                    
+                    chk = ctk.CTkCheckBox(
+                        scroll_frame,
+                        text=f"[{time_str}]  {ticker}",
+                        variable=var,
+                        font=("Consolas", 14),
+                        height=30,
+                        width=500
+                    )
+                    chk.pack(anchor="w", padx=10, pady=2, fill="x")
+                    file_vars.append((var, fp))
+
 
         def load_files():
             try:
@@ -763,6 +1066,360 @@ class LietaApp(ctk.CTk):
                 subprocess.call(('xdg-open', filepath))
         except Exception as e:
             print(f"Failed to open file cross-platform: {e}")
+
+    def open_ticker_manager_std(self):
+        """Open ticker management window for Standard platform"""
+        if not self.ticker_filepath:
+            import tkinter.messagebox
+            tkinter.messagebox.showwarning("警告", "請先選擇 Standard Ticker 檔案")
+            return
+        self.open_ticker_manager(self.ticker_filepath, "Standard Platform Tickers")
+    
+    def open_ticker_manager_cme(self):
+        """Open ticker management window for CME platform"""
+        if not self.cme_ticker_filepath:
+            import tkinter.messagebox
+            tkinter.messagebox.showwarning("警告", "請先選擇 CME Ticker 檔案")
+            return
+        self.open_ticker_manager(self.cme_ticker_filepath, "CME Platform Tickers")
+    
+    def open_ticker_manager(self, filepath, title):
+        """
+        Opens a window to manage tickers with groups
+        """
+        window = ctk.CTkToplevel(self)
+        window.title(f"Manage Tickers - {title}")
+        window.geometry("800x700")  # Increased height from 600 to 700
+        window.transient(self)
+        window.lift()
+        window.focus_force()
+        
+        # Load current data
+        groups_data = utils.load_tickers_with_groups(filepath)
+        
+        # Layout: Left (Group List) | Right (Ticker List + Controls)
+        window.grid_columnconfigure(1, weight=1)
+        window.grid_rowconfigure(0, weight=1)
+        
+        # === LEFT PANEL: Groups ===
+        left_frame = ctk.CTkFrame(window, width=200)
+        left_frame.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
+        left_frame.grid_rowconfigure(1, weight=1)
+        
+        ctk.CTkLabel(left_frame, text="群組 (Groups)", font=("", 16, "bold")).grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        
+        # Group listbox
+        group_frame = ctk.CTkScrollableFrame(left_frame)
+        group_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        
+        selected_group = ctk.StringVar(value="")
+        group_buttons = []
+        
+        def refresh_groups():
+            """Refresh the group list display"""
+            for btn in group_buttons:
+                btn.destroy()
+            group_buttons.clear()
+            
+            for group_name in groups_data.keys():
+                btn = ctk.CTkRadioButton(
+                    group_frame, 
+                    text=f"{group_name} ({len(groups_data[group_name])})",
+                    variable=selected_group,
+                    value=group_name,
+                    command=refresh_tickers,
+                    font=("", 13)
+                )
+                btn.pack(anchor="w", pady=2, padx=5)
+                group_buttons.append(btn)
+            
+            # Auto-select first group if none selected
+            if groups_data and not selected_group.get():
+                selected_group.set(list(groups_data.keys())[0])
+                refresh_tickers()
+        
+        # Group action buttons
+        group_btn_frame = ctk.CTkFrame(left_frame, fg_color="transparent")
+        group_btn_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        
+        def add_group():
+            dialog = ctk.CTkInputDialog(text="輸入新群組名稱:", title="新增群組")
+            group_name = dialog.get_input()
+            if group_name and group_name.strip():
+                group_name = group_name.strip()
+                if group_name in groups_data:
+                    import tkinter.messagebox
+                    tkinter.messagebox.showwarning("警告", "群組名稱已存在")
+                else:
+                    groups_data[group_name] = []
+                    refresh_groups()
+                    selected_group.set(group_name)
+                    refresh_tickers()
+        
+        def rename_group():
+            current = selected_group.get()
+            if not current:
+                import tkinter.messagebox
+                tkinter.messagebox.showwarning("警告", "請先選擇一個群組")
+                return
+            
+            dialog = ctk.CTkInputDialog(text=f"重新命名群組 '{current}':", title="重新命名群組")
+            new_name = dialog.get_input()
+            if new_name and new_name.strip():
+                new_name = new_name.strip()
+                if new_name in groups_data and new_name != current:
+                    import tkinter.messagebox
+                    tkinter.messagebox.showwarning("警告", "群組名稱已存在")
+                else:
+                    groups_data[new_name] = groups_data.pop(current)
+                    selected_group.set(new_name)
+                    refresh_groups()
+                    refresh_tickers()
+        
+        def delete_group():
+            current = selected_group.get()
+            if not current:
+                import tkinter.messagebox
+                tkinter.messagebox.showwarning("警告", "請先選擇一個群組")
+                return
+            
+            import tkinter.messagebox
+            if tkinter.messagebox.askyesno("確認", f"確定要刪除群組 '{current}' 及其所有 tickers?"):
+                del groups_data[current]
+                selected_group.set("")
+                refresh_groups()
+                refresh_tickers()
+        
+        ctk.CTkButton(group_btn_frame, text="+ 新增", command=add_group, width=60, height=28).pack(side="left", padx=2)
+        ctk.CTkButton(group_btn_frame, text="✏️ 重新命名", command=rename_group, width=80, height=28, fg_color="transparent", border_width=1).pack(side="left", padx=2)
+        ctk.CTkButton(group_btn_frame, text="🗑️ 刪除", command=delete_group, width=60, height=28, fg_color="#FF4D4D", hover_color="#CC0000").pack(side="left", padx=2)
+        
+        # === RIGHT PANEL: Tickers ===
+        right_frame = ctk.CTkFrame(window)
+        right_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
+        right_frame.grid_rowconfigure(1, weight=1)
+        
+        ticker_label = ctk.CTkLabel(right_frame, text="Tickers", font=("", 16, "bold"))
+        ticker_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        
+        # Ticker listbox
+        ticker_frame = ctk.CTkScrollableFrame(right_frame)
+        ticker_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        
+        ticker_frames = []  # Store only frame widgets
+        ticker_checkboxes = {}  # ticker -> BooleanVar mapping
+        
+        def refresh_tickers():
+            """Refresh the ticker list display"""
+            # Clear checkboxes mapping first
+            ticker_checkboxes.clear()
+            
+            # Destroy only frames (this will destroy their children automatically)
+            for frame in ticker_frames:
+                try:
+                    frame.destroy()
+                except:
+                    pass  # Ignore errors if already destroyed
+            ticker_frames.clear()
+            
+            current_group = selected_group.get()
+            ticker_label.configure(text=f"Tickers - {current_group}" if current_group else "Tickers")
+            
+            if not current_group or current_group not in groups_data:
+                return
+            
+            tickers = groups_data[current_group]
+            for ticker in tickers:
+                frame = ctk.CTkFrame(ticker_frame, fg_color="transparent")
+                frame.pack(fill="x", pady=2, padx=5)
+                ticker_frames.append(frame)  # Only store the frame
+                
+                # Checkbox for selection
+                var = ctk.BooleanVar(value=False)
+                ticker_checkboxes[ticker] = var
+                
+                chk = ctk.CTkCheckBox(frame, text=ticker, variable=var, font=("", 14))
+                chk.pack(side="left", fill="x", expand=True, padx=5)
+                
+                # Delete button
+                def make_delete_handler(t):
+                    return lambda: delete_ticker(t)
+                
+                btn_del = ctk.CTkButton(frame, text="🗑️", width=30, height=24, 
+                                       command=make_delete_handler(ticker),
+                                       fg_color="#FF4D4D", hover_color="#CC0000")
+                btn_del.pack(side="right", padx=2)
+
+        
+        def add_ticker():
+            current_group = selected_group.get()
+            if not current_group:
+                import tkinter.messagebox
+                tkinter.messagebox.showwarning("警告", "請先選擇一個群組")
+                return
+            
+            dialog = ctk.CTkInputDialog(text="輸入 Ticker 代號 (多個請用逗號分隔):", title="新增 Ticker")
+            ticker_input = dialog.get_input()
+            if ticker_input and ticker_input.strip():
+                new_tickers = [t.strip().upper() for t in ticker_input.split(',') if t.strip()]
+                for ticker in new_tickers:
+                    if ticker not in groups_data[current_group]:
+                        groups_data[current_group].append(ticker)
+                refresh_groups()
+                refresh_tickers()
+        
+        def move_ticker(ticker):
+            """Move ticker(s) to another group. Supports single ticker (string) or multiple tickers (list)"""
+            current_group = selected_group.get()
+            
+            # Handle both single ticker and list of tickers
+            if isinstance(ticker, list):
+                tickers_to_move = ticker
+                ticker_display = f"{len(tickers_to_move)} 個 tickers"
+            else:
+                tickers_to_move = [ticker]
+                ticker_display = f"'{ticker}'"
+            
+            # Validate all tickers are in current group
+            if not current_group:
+                return
+            
+            valid_tickers = [t for t in tickers_to_move if t in groups_data[current_group]]
+            if not valid_tickers:
+                return
+            
+            # Get available target groups (exclude current group)
+            target_groups = [g for g in groups_data.keys() if g != current_group]
+            
+            if not target_groups:
+                import tkinter.messagebox
+                tkinter.messagebox.showwarning("警告", "沒有其他群組可以移動。請先建立新群組。")
+                return
+            
+            # Create selection dialog
+            move_window = ctk.CTkToplevel(window)
+            move_window.title(f"批次移動 Tickers")
+            move_window.geometry("400x450")  # Increased from 280 to 450
+            move_window.transient(window)
+            move_window.lift()
+            move_window.focus_force()
+            
+            ctk.CTkLabel(move_window, text=f"選擇目標群組:", font=("", 14, "bold")).pack(pady=15, padx=20)
+            ctk.CTkLabel(move_window, text=f"將 {ticker_display} 從 '{current_group}' 移動到:", font=("", 12)).pack(pady=5, padx=20)
+            
+            # Group selection
+            selected_target = ctk.StringVar(value=target_groups[0])
+            
+            group_select_frame = ctk.CTkScrollableFrame(move_window, height=200)  # Increased from 120 to 200
+            group_select_frame.pack(fill="x", padx=20, pady=10)
+            
+            for target_group in sorted(target_groups):
+                rb = ctk.CTkRadioButton(
+                    group_select_frame,
+                    text=f"{target_group} ({len(groups_data[target_group])} tickers)",
+                    variable=selected_target,
+                    value=target_group,
+                    font=("", 12)
+                )
+                rb.pack(anchor="w", pady=2, padx=5)
+            
+            # Buttons
+            btn_frame = ctk.CTkFrame(move_window, fg_color="transparent")
+            btn_frame.pack(pady=10)
+            
+            def confirm_move():
+                target = selected_target.get()
+                if target and target in groups_data:
+                    # Move all valid tickers
+                    for t in valid_tickers:
+                        # Remove from current group
+                        groups_data[current_group].remove(t)
+                        
+                        # Add to target group (avoid duplicates)
+                        if t not in groups_data[target]:
+                            groups_data[target].append(t)
+                    
+                    refresh_groups()
+                    refresh_tickers()
+                    move_window.destroy()
+            
+            def cancel_move():
+                move_window.destroy()
+            
+            ctk.CTkButton(btn_frame, text="✓ 確認移動", command=confirm_move, width=120, 
+                         fg_color="#2CC985", hover_color="#229C68").pack(side="left", padx=5)
+            ctk.CTkButton(btn_frame, text="✖ 取消", command=cancel_move, width=120,
+                         fg_color="gray", hover_color="darkgray").pack(side="left", padx=5)
+        
+        def delete_ticker(ticker):
+            current_group = selected_group.get()
+            if current_group and ticker in groups_data[current_group]:
+                groups_data[current_group].remove(ticker)
+                refresh_groups()
+                refresh_tickers()
+        
+        # Ticker action buttons
+        ticker_btn_frame = ctk.CTkFrame(right_frame, fg_color="transparent")
+        ticker_btn_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        
+        def select_all_tickers():
+            """Select all tickers in current group"""
+            for var in ticker_checkboxes.values():
+                var.set(True)
+        
+        def deselect_all_tickers():
+            """Deselect all tickers in current group"""
+            for var in ticker_checkboxes.values():
+                var.set(False)
+        
+        def batch_move_tickers():
+            """Move selected tickers to another group"""
+            current_group = selected_group.get()
+            if not current_group:
+                import tkinter.messagebox
+                tkinter.messagebox.showwarning("警告", "請先選擇一個群組")
+                return
+            
+            # Get selected tickers
+            selected_tickers = [ticker for ticker, var in ticker_checkboxes.items() if var.get()]
+            
+            if not selected_tickers:
+                import tkinter.messagebox
+                tkinter.messagebox.showwarning("警告", "請先勾選要移動的 tickers")
+                return
+            
+            # Call move_ticker with list of tickers
+            move_ticker(selected_tickers)
+        
+        ctk.CTkButton(ticker_btn_frame, text="+ 新增 Ticker", command=add_ticker, width=100, height=32).pack(side="left", padx=5)
+        ctk.CTkButton(ticker_btn_frame, text="☑ 全選", command=select_all_tickers, width=70, height=32, fg_color="transparent", border_width=1).pack(side="left", padx=2)
+        ctk.CTkButton(ticker_btn_frame, text="☐ 取消", command=deselect_all_tickers, width=70, height=32, fg_color="transparent", border_width=1).pack(side="left", padx=2)
+        ctk.CTkButton(ticker_btn_frame, text="➜ 批次移動", command=batch_move_tickers, width=100, height=32, fg_color="#3B8ED0", hover_color="#36719F").pack(side="left", padx=5)
+        
+        # === BOTTOM: Save/Cancel ===
+        bottom_frame = ctk.CTkFrame(window, fg_color="transparent")
+        bottom_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
+        
+        def save_changes():
+            if utils.save_tickers_with_groups(filepath, groups_data):
+                self.log(f"Ticker 檔案已儲存: {filepath}")
+                import tkinter.messagebox
+                tkinter.messagebox.showinfo("成功", "變更已儲存")
+                window.destroy()
+            else:
+                import tkinter.messagebox
+                tkinter.messagebox.showerror("錯誤", "儲存失敗")
+        
+        def cancel_changes():
+            window.destroy()
+        
+        ctk.CTkButton(bottom_frame, text="💾 儲存", command=save_changes, width=120, height=35, 
+                     fg_color="#2CC985", hover_color="#229C68", font=("", 13, "bold")).pack(side="right", padx=5)
+        ctk.CTkButton(bottom_frame, text="✖️ 取消", command=cancel_changes, width=120, height=35,
+                     fg_color="gray", hover_color="darkgray", font=("", 13, "bold")).pack(side="right", padx=5)
+        
+        # Initial load
+        refresh_groups()
 
     def close_app(self):
         try:
