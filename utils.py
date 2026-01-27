@@ -68,14 +68,98 @@ def load_tickers_with_groups(filepath):
         # Try to parse as JSON first
         try:
             data = json.loads(content)
-            # Validate structure
-            if isinstance(data, dict):
+            
+            # Fast path: Quick validation for well-formed data
+            if isinstance(data, dict) and data:
+                # Quick check: if all values are lists, it's likely valid
+                # Only do deep validation if we detect potential issues
+                all_lists = all(isinstance(v, list) for v in data.values())
+                
+                if all_lists:
+                    # Quick sample check: look at first value of first group
+                    first_group = next(iter(data.values()), [])
+                    
+                    # If empty or first item is a plain string (not JSON-like), assume valid
+                    if not first_group or (isinstance(first_group[0], str) and 
+                                          not first_group[0].strip().startswith(('{', '"', '['))):
+                        return data
+                
+                # Potential corruption detected - do deep validation
+                is_corrupted = False
+                for group_name, ticker_list in data.items():
+                    if isinstance(ticker_list, list):
+                        # Check if list contains JSON-like strings
+                        if any(isinstance(item, str) and 
+                              (item.strip().startswith('{') or 
+                               item.strip().startswith('\\"') or 
+                               item.strip() in ['{', '}', '[', ']']) for item in ticker_list):
+                            is_corrupted = True
+                            break
+                    else:
+                        raise ValueError(f"Group '{group_name}' value must be a list")
+                
+                if is_corrupted:
+                    print(f"⚠️ Detected corrupted double-encoded JSON in {filepath}")
+                    print("   Attempting to recover data...")
+                    
+                    # Try to extract ticker data from corrupted structure
+                    recovered_data = {}
+                    current_group = None
+                    current_tickers = []
+                    
+                    for key, value in data.items():
+                        if isinstance(value, list):
+                            for item in value:
+                                item_str = str(item).strip()
+                                
+                                # Skip structural JSON characters
+                                if item_str in ['{', '}', '[', ']', ',']:
+                                    continue
+                                
+                                # Detect group definition: "GroupName": [
+                                if '": [' in item_str or '\": [' in item_str:
+                                    # Save previous group
+                                    if current_group and current_tickers:
+                                        recovered_data[current_group] = current_tickers
+                                    
+                                    # Extract new group name
+                                    group_match = item_str.strip('", ').replace('": [', '').replace('\": [', '').strip('"\\"')
+                                    current_group = group_match
+                                    current_tickers = []
+                                
+                                # Detect ticker (quoted string that's not a group definition)
+                                elif item_str.startswith('\\"') and item_str.endswith('\\"'):
+                                    ticker = item_str.strip('"\\"')
+                                    if ticker and not ticker.endswith(':'):
+                                        current_tickers.append(ticker)
+                    
+                    # Save last group
+                    if current_group and current_tickers:
+                        recovered_data[current_group] = current_tickers
+                    
+                    if recovered_data:
+                        print(f"✓ Successfully recovered {len(recovered_data)} groups")
+                        # Save the recovered data
+                        save_tickers_with_groups(filepath, recovered_data)
+                        return recovered_data
+                    else:
+                        raise ValueError("Could not recover data from corrupted file")
+                
+                # Valid structure, return it
                 return data
+            elif not isinstance(data, dict):
+                raise ValueError("JSON root must be a dictionary")
             else:
-                # Invalid JSON structure, treat as legacy
-                raise ValueError("Invalid JSON structure")
-        except (json.JSONDecodeError, ValueError):
-            # Legacy plain text format - migrate it
+                # Empty dict
+                return data
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            # If it's a corrupted structure error, re-raise it
+            if "corrupted" in str(e).lower() or "Could not recover" in str(e):
+                raise
+            
+            # Otherwise, treat as legacy plain text format - migrate it
+            print(f"Migrating legacy format: {filepath}")
             parts = re.split(r'[,\n]+', content)
             tickers = [p.strip() for p in parts if p.strip()]
             migrated_data = {"Default": tickers}

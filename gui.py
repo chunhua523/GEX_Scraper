@@ -1133,10 +1133,10 @@ class LietaApp(ctk.CTk):
                 btn.pack(anchor="w", pady=2, padx=5)
                 group_buttons.append(btn)
             
-            # Auto-select first group if none selected
+            # Only auto-select if there's no selection yet
             if groups_data and not selected_group.get():
                 selected_group.set(list(groups_data.keys())[0])
-                refresh_tickers()
+                # Don't auto-refresh tickers here - let the initial call handle it
         
         # Group action buttons
         group_btn_frame = ctk.CTkFrame(left_frame, fg_color="transparent")
@@ -1420,6 +1420,9 @@ class LietaApp(ctk.CTk):
         
         # Initial load
         refresh_groups()
+        # Manually refresh tickers for the initially selected group
+        if selected_group.get():
+            refresh_tickers()
 
     def close_app(self):
         try:
