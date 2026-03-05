@@ -672,6 +672,11 @@ class LietaScraper:
                 break # Success, break retry loop
 
             except Exception as e:
+                err_msg = str(e)
+                if "Target page, context or browser has been closed" in err_msg or "TargetClosedError" in type(e).__name__:
+                    self.log(f"[{model}] {ticker} - Browser/context closed, skipping (no retry).")
+                    self.record_failure(short_plat, model, ticker, "Browser/context closed")
+                    return
                 self.log(f"[{model}] {ticker} - Attempt {attempt+1}/{max_retries} failed: {e}")
                 if attempt == max_retries - 1:
                     self.log(f"[{model}] {ticker} - Skipped after retries.")

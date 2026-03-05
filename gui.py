@@ -260,23 +260,23 @@ class LietaApp(ctk.CTk):
     def select_ticker_file(self):
         path = filedialog.askopenfilename(filetypes=[("Text/CSV", "*.txt *.csv")])
         if path:
-            self.ticker_filepath = path
+            self.ticker_filepath = os.path.abspath(path)
             self.lbl_ticker_file.configure(text=os.path.basename(path))
-            self.log(f"Selected tickers: {path}")
+            self.log(f"Selected tickers: {self.ticker_filepath}")
 
     def select_cme_ticker_file(self):
         path = filedialog.askopenfilename(filetypes=[("Text/CSV", "*.txt *.csv")])
         if path:
-            self.cme_ticker_filepath = path
+            self.cme_ticker_filepath = os.path.abspath(path)
             self.lbl_cme_ticker.configure(text=os.path.basename(path))
-            self.log(f"Selected CME tickers: {path}")
+            self.log(f"Selected CME tickers: {self.cme_ticker_filepath}")
 
     def select_download_path(self):
         path = filedialog.askdirectory()
         if path:
-            self.download_folder = path
-            self.lbl_dl_path.configure(text=path)
-            self.log(f"Selected download folder: {path}")
+            self.download_folder = os.path.abspath(path)
+            self.lbl_dl_path.configure(text=self.download_folder)
+            self.log(f"Selected download folder: {self.download_folder}")
 
     def on_start(self):
         # Validation
@@ -294,17 +294,33 @@ class LietaApp(ctk.CTk):
             if not self.ticker_filepath:
                 self.log("Error: Standard models selected but no Ticker list provided.")
                 return
+            groups_std = utils.load_tickers_with_groups(self.ticker_filepath)
             tickers = utils.load_tickers_from_file(self.ticker_filepath)
+        else:
+            groups_std = {}
+            tickers = []
         
         if selected_cme_models:
             if not self.cme_ticker_filepath:
                 self.log("Error: CME models selected but no CME Ticker list provided.")
                 return
+            groups_cme = utils.load_tickers_with_groups(self.cme_ticker_filepath)
             cme_tickers = utils.load_tickers_from_file(self.cme_ticker_filepath)
+        else:
+            groups_cme = {}
+            cme_tickers = []
             
         if not selected_models and not selected_cme_models:
             self.log("Error: Please select at least one model (Standard or CME).")
             return
+
+        if not tickers and not cme_tickers:
+            return
+
+        result = self._show_ticker_selection_dialog(groups_std, groups_cme)
+        if result[0] is None and result[1] is None:
+            return
+        tickers_filtered, cme_tickers_filtered = result
 
         parallel = self.var_parallel.get()
         browser_type = self.var_browser.get()
@@ -318,10 +334,10 @@ class LietaApp(ctk.CTk):
         os.makedirs("logs", exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.current_log_file = os.path.join("logs", f"run_{timestamp}.log")
-        self.log(f"Starting job... (Std: {len(tickers)} tickers, CME: {len(cme_tickers)} tickers) Browser: {browser_type}")
+        self.log(f"Starting job... (Std: {len(tickers_filtered)} tickers, CME: {len(cme_tickers_filtered)} tickers) Browser: {browser_type}")
         self.log(f"Logging to: {self.current_log_file}")
         
-        threading.Thread(target=self._run_job_thread, args=(tickers, selected_models, cme_tickers, selected_cme_models, self.download_folder, parallel, browser_type), daemon=True).start()
+        threading.Thread(target=self._run_job_thread, args=(tickers_filtered, selected_models, cme_tickers_filtered, selected_cme_models, self.download_folder, parallel, browser_type), daemon=True).start()
 
     def _run_job_thread(self, tickers, models, cme_tickers, cme_models, download_folder, parallel, browser_type):
         self.scraper_instance = LietaScraper(logger_func=self.log_safe, browser_type=browser_type)
@@ -363,6 +379,10 @@ class LietaApp(ctk.CTk):
             self.log("No failed items to retry.")
             return
 
+        selected_tasks = self._show_retry_selection_dialog(self.last_failed_tasks)
+        if not selected_tasks:
+            return
+
         self.btn_start.configure(state="disabled")
         self.btn_retry.configure(state="disabled")
         self.btn_stop.configure(state="normal")
@@ -374,9 +394,9 @@ class LietaApp(ctk.CTk):
         os.makedirs("logs", exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.current_log_file = os.path.join("logs", f"retry_{timestamp}.log")
-        self.log(f"Starting RETRY job... ({len(self.last_failed_tasks)} items) Browser: {browser_type}")
+        self.log(f"Starting RETRY job... ({len(selected_tasks)} items) Browser: {browser_type}")
 
-        threading.Thread(target=self._run_retry_thread, args=(self.last_failed_tasks, self.download_folder, parallel, browser_type), daemon=True).start()
+        threading.Thread(target=self._run_retry_thread, args=(selected_tasks, self.download_folder, parallel, browser_type), daemon=True).start()
 
     def _run_retry_thread(self, failed_tasks, download_folder, parallel, browser_type):
         self.scraper_instance = LietaScraper(logger_func=self.log_safe, browser_type=browser_type)
@@ -391,6 +411,133 @@ class LietaApp(ctk.CTk):
             self.scraper_instance = None
             self.after(0, self._job_finished)
 
+
+    def _show_ticker_selection_dialog(self, groups_std, groups_cme):
+        """Show modal dialog to select which tickers to run, grouped by ticker file groups. Returns (tickers_filtered, cme_tickers_filtered) or (None, None) on cancel."""
+        self._ticker_dialog_result = (None, None)
+        window = ctk.CTkToplevel(self)
+        window.title("選擇要執行的 Tickers")
+        window.geometry("600x550")
+        window.transient(self)
+        window.lift()
+        window.focus_force()
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(window, text="請勾選要執行的 Tickers（預設全選），可依群組全選/取消全選", font=("", 13)).grid(row=0, column=0, sticky="w", padx=10, pady=10)
+        main_scroll = ctk.CTkScrollableFrame(window)
+        main_scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        main_scroll.grid_columnconfigure(0, weight=1)
+
+        std_vars = []
+        cme_vars = []
+
+        def add_group_section(platform_label, group_name, ticker_list, var_list):
+            if not ticker_list:
+                return
+            frame = ctk.CTkFrame(main_scroll, fg_color="transparent")
+            frame.pack(fill="x", pady=(10, 5))
+            frame.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(frame, text=f"{platform_label} - {group_name} ({len(ticker_list)} tickers)", font=("", 14, "bold")).pack(anchor="w", pady=(0, 5))
+            btn_row = ctk.CTkFrame(frame, fg_color="transparent")
+            btn_row.pack(fill="x", pady=(0, 3))
+            content = ctk.CTkFrame(frame, fg_color="transparent")
+            content.pack(fill="x")
+            group_vars = []
+            for t in ticker_list:
+                var = ctk.BooleanVar(value=True)
+                group_vars.append((t, var))
+                var_list.append((t, var))
+                ctk.CTkCheckBox(content, text=t, variable=var, font=("", 12)).pack(anchor="w", pady=1)
+            def select_all():
+                for _, v in group_vars:
+                    v.set(True)
+            def deselect_all():
+                for _, v in group_vars:
+                    v.set(False)
+            ctk.CTkButton(btn_row, text="全選", command=select_all, width=70, height=28).pack(side="left", padx=(0, 5))
+            ctk.CTkButton(btn_row, text="取消全選", command=deselect_all, width=80, height=28, fg_color="transparent", border_width=1).pack(side="left")
+
+        if groups_std:
+            for group_name in sorted(groups_std.keys()):
+                add_group_section("Standard Platform", group_name, groups_std[group_name], std_vars)
+        if groups_cme:
+            for group_name in sorted(groups_cme.keys()):
+                add_group_section("CME Platform", group_name, groups_cme[group_name], cme_vars)
+
+        bottom = ctk.CTkFrame(window, fg_color="transparent")
+        bottom.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        bottom.grid_columnconfigure(0, weight=1)
+
+        def on_confirm():
+            tickers_f = [t for t, v in std_vars if v.get()]
+            cme_f = [t for t, v in cme_vars if v.get()]
+            self._ticker_dialog_result = (tickers_f, cme_f)
+            window.destroy()
+
+        def on_cancel():
+            self._ticker_dialog_result = (None, None)
+            window.destroy()
+
+        ctk.CTkButton(bottom, text="確認並開始", command=on_confirm, width=120, height=35,
+                      fg_color="#2CC985", hover_color="#229C68", font=("", 13, "bold")).pack(side="right", padx=5)
+        ctk.CTkButton(bottom, text="取消", command=on_cancel, width=120, height=35,
+                      fg_color="gray", hover_color="darkgray", font=("", 13, "bold")).pack(side="right")
+        window.protocol("WM_DELETE_WINDOW", on_cancel)
+        self.wait_window(window)
+        return self._ticker_dialog_result
+
+    def _show_retry_selection_dialog(self, failed_tasks):
+        """Show modal dialog to select which failed items to retry. Returns list of selected dicts or None on cancel."""
+        self._retry_dialog_result = None
+        window = ctk.CTkToplevel(self)
+        window.title("選擇要重試的失敗項目")
+        window.geometry("600x500")
+        window.transient(self)
+        window.lift()
+        window.focus_force()
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(window, text=f"共 {len(failed_tasks)} 個失敗項目，請勾選要重試的項目（預設全選）", font=("", 13)).grid(row=0, column=0, sticky="w", padx=10, pady=10)
+        scroll = ctk.CTkScrollableFrame(window)
+        scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        scroll.grid_columnconfigure(0, weight=1)
+
+        item_vars = []
+        for item in failed_tasks:
+            platform_label = "Standard" if item.get("platform") == "std" else "CME"
+            label = f"[{platform_label}] {item.get('model', '')} - {item.get('ticker', '')}"
+            var = ctk.BooleanVar(value=True)
+            item_vars.append((item, var))
+            ctk.CTkCheckBox(scroll, text=label, variable=var, font=("", 12)).pack(anchor="w", pady=2)
+
+        btn_row = ctk.CTkFrame(window, fg_color="transparent")
+        btn_row.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 5))
+        btn_row.grid_columnconfigure(0, weight=1)
+
+        def select_all():
+            for _, v in item_vars:
+                v.set(True)
+        def deselect_all():
+            for _, v in item_vars:
+                v.set(False)
+        def on_confirm():
+            self._retry_dialog_result = [item for item, v in item_vars if v.get()]
+            window.destroy()
+        def on_cancel():
+            self._retry_dialog_result = None
+            window.destroy()
+
+        ctk.CTkButton(btn_row, text="全選", command=select_all, width=70, height=28).pack(side="left", padx=(0, 5))
+        ctk.CTkButton(btn_row, text="取消全選", command=deselect_all, width=80, height=28, fg_color="transparent", border_width=1).pack(side="left")
+        ctk.CTkButton(btn_row, text="確認並重試", command=on_confirm, width=120, height=35,
+                      fg_color="#2CC985", hover_color="#229C68", font=("", 13, "bold")).pack(side="right", padx=5)
+        ctk.CTkButton(btn_row, text="取消", command=on_cancel, width=120, height=35,
+                      fg_color="gray", hover_color="darkgray", font=("", 13, "bold")).pack(side="right")
+        window.protocol("WM_DELETE_WINDOW", on_cancel)
+        self.wait_window(window)
+        return self._retry_dialog_result
 
     def log(self, message):
         timestamp_str = datetime.now().strftime("[%H:%M:%S] ")
@@ -410,9 +557,9 @@ class LietaApp(ctk.CTk):
     def save_settings(self):
         import json
         settings = {
-            "ticker_filepath": self.ticker_filepath,
-            "cme_ticker_filepath": self.cme_ticker_filepath,
-            "download_folder": self.download_folder,
+            "ticker_filepath": os.path.abspath(self.ticker_filepath) if self.ticker_filepath else None,
+            "cme_ticker_filepath": os.path.abspath(self.cme_ticker_filepath) if self.cme_ticker_filepath else None,
+            "download_folder": os.path.abspath(self.download_folder) if self.download_folder else None,
             "selected_models": [m for m, var in self.model_vars.items() if var.get() != "off"],
             "selected_cme_models": [m for m, var in self.cme_model_vars.items() if var.get() != "off"],
             "parallel": self.var_parallel.get(),
@@ -435,15 +582,15 @@ class LietaApp(ctk.CTk):
                 settings = json.load(f)
             
             if settings.get("ticker_filepath"):
-                self.ticker_filepath = settings["ticker_filepath"]
+                self.ticker_filepath = os.path.abspath(settings["ticker_filepath"])
                 self.lbl_ticker_file.configure(text=os.path.basename(self.ticker_filepath))
             
             if settings.get("cme_ticker_filepath"):
-                self.cme_ticker_filepath = settings["cme_ticker_filepath"]
+                self.cme_ticker_filepath = os.path.abspath(settings["cme_ticker_filepath"])
                 self.lbl_cme_ticker.configure(text=os.path.basename(self.cme_ticker_filepath))
             
             if settings.get("download_folder"):
-                self.download_folder = settings["download_folder"]
+                self.download_folder = os.path.abspath(settings["download_folder"])
                 self.lbl_dl_path.configure(text=self.download_folder)
 
             if settings.get("selected_models"):
@@ -1087,6 +1234,7 @@ class LietaApp(ctk.CTk):
         """
         Opens a window to manage tickers with groups
         """
+        filepath = os.path.abspath(filepath)
         window = ctk.CTkToplevel(self)
         window.title(f"Manage Tickers - {title}")
         window.geometry("800x700")  # Increased height from 600 to 700
