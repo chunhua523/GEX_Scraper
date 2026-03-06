@@ -51,7 +51,7 @@ class LietaApp(ctk.CTk):
                     if self.btn_start.cget("state") != "disabled":
                         self.log(f"Auto-Schedule Triggered (Mon-Fri) at {target_time}")
                         self.last_run_date = today_str
-                        self.on_start()
+                        self.on_start(skip_selection_dialog=True)
                     else:
                         self.log("Skipping Schedule: Job already running.")
         
@@ -278,7 +278,7 @@ class LietaApp(ctk.CTk):
             self.lbl_dl_path.configure(text=self.download_folder)
             self.log(f"Selected download folder: {self.download_folder}")
 
-    def on_start(self):
+    def on_start(self, skip_selection_dialog=False):
         # Validation
         if not self.download_folder:
             self.log("Error: Please select a download folder.")
@@ -317,10 +317,13 @@ class LietaApp(ctk.CTk):
         if not tickers and not cme_tickers:
             return
 
-        result = self._show_ticker_selection_dialog(groups_std, groups_cme)
-        if result[0] is None and result[1] is None:
-            return
-        tickers_filtered, cme_tickers_filtered = result
+        if skip_selection_dialog:
+            tickers_filtered, cme_tickers_filtered = tickers, cme_tickers
+        else:
+            result = self._show_ticker_selection_dialog(groups_std, groups_cme)
+            if result[0] is None and result[1] is None:
+                return
+            tickers_filtered, cme_tickers_filtered = result
 
         parallel = self.var_parallel.get()
         browser_type = self.var_browser.get()
@@ -424,7 +427,9 @@ class LietaApp(ctk.CTk):
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(window, text="請勾選要執行的 Tickers（預設全選），可依群組全選/取消全選", font=("", 13)).grid(row=0, column=0, sticky="w", padx=10, pady=10)
+        top_row = ctk.CTkFrame(window, fg_color="transparent")
+        top_row.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        top_row.grid_columnconfigure(0, weight=1)
         main_scroll = ctk.CTkScrollableFrame(window)
         main_scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
         main_scroll.grid_columnconfigure(0, weight=1)
@@ -464,6 +469,19 @@ class LietaApp(ctk.CTk):
         if groups_cme:
             for group_name in sorted(groups_cme.keys()):
                 add_group_section("CME Platform", group_name, groups_cme[group_name], cme_vars)
+
+        def global_select_all():
+            for _, v in std_vars:
+                v.set(True)
+            for _, v in cme_vars:
+                v.set(True)
+        def global_deselect_all():
+            for _, v in std_vars:
+                v.set(False)
+            for _, v in cme_vars:
+                v.set(False)
+        ctk.CTkButton(top_row, text="全選", command=global_select_all, width=80, height=28).grid(row=0, column=1, padx=(5, 0))
+        ctk.CTkButton(top_row, text="取消全選", command=global_deselect_all, width=90, height=28, fg_color="transparent", border_width=1).grid(row=0, column=2, padx=(5, 0))
 
         bottom = ctk.CTkFrame(window, fg_color="transparent")
         bottom.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
