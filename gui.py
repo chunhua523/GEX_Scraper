@@ -639,8 +639,8 @@ class LietaApp(ctk.CTk):
             
     def open_file_viewer(self):
         """
-        Opens a Toplevel window to list and open files for a specific date (defaults to today).
-        Optimized with filename string matching and SegmentedButton for model selection.
+        Opens a Toplevel window to list and open files.
+        Supports two modes: By Date and By Ticker & Model.
         """
         if not hasattr(self, 'download_folder') or not self.download_folder or not os.path.exists(self.download_folder):
             import tkinter.messagebox
@@ -650,180 +650,158 @@ class LietaApp(ctk.CTk):
         # Create Window
         window = ctk.CTkToplevel(self)
         window.title("View Downloaded Files")
-        window.geometry("950x650") # Wider for side-by-side layout
-        
-        # Make this window transient to the main window
+        window.geometry("1100x700")
+
         window.transient(self)
         window.lift()
         window.focus_force()
 
-        # Grid Layout Configuration: 2 Columns
-        window.grid_columnconfigure(1, weight=1) # Content area expands
-        window.grid_rowconfigure(0, weight=1)
+        # Grid Layout: row=0 top bar, row=1 main panels
+        window.grid_columnconfigure(1, weight=1)
+        window.grid_rowconfigure(1, weight=1)
 
-        # === LEFT SIDEBAR (Controls) ===
+        # =====================================================
+        # TOP MODE SWITCHER BAR
+        # =====================================================
+        top_bar = ctk.CTkFrame(window, height=48, corner_radius=0, fg_color=("#DCDCDC", "#242424"))
+        top_bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        top_bar.grid_propagate(False)
+
+        ctk.CTkLabel(top_bar, text="View Mode:", font=("", 13), text_color=("gray40", "gray60")).pack(side="left", padx=(20, 8), pady=12)
+
+        seg_mode = ctk.CTkSegmentedButton(top_bar, values=["By Date", "By Ticker & Model"], width=320, height=30)
+        seg_mode.set("By Date")
+        seg_mode.pack(side="left", pady=10)
+
+        # =====================================================
+        # BY DATE: LEFT PANEL
+        # =====================================================
         left_panel = ctk.CTkFrame(window, width=280, corner_radius=0)
-        left_panel.grid(row=0, column=0, sticky="nsew")
+        left_panel.grid(row=1, column=0, sticky="nsew")
         left_panel.grid_columnconfigure(0, weight=1)
-        
-        # Title in Sidebar
+
         ctk.CTkLabel(left_panel, text="Control Panel", font=("", 18, "bold"), text_color="#DCE4EE").pack(pady=(20, 10))
 
-        # Calendar Widget
         cal_container = ctk.CTkFrame(left_panel, fg_color="transparent")
         cal_container.pack(padx=10, pady=5)
-        
-        ctk.CTkLabel(cal_container, text="Select Date:", font=("", 14), anchor="w").pack(fill="x", pady=(0,5))
+
+        ctk.CTkLabel(cal_container, text="Select Date:", font=("", 14), anchor="w").pack(fill="x", pady=(0, 5))
         cal = Calendar(cal_container, selectmode='day', date_pattern='yyyy-mm-dd',
                        font=('Arial', 16), cursor="hand2")
         cal.pack()
-        
-        # Bind calendar selection change to auto-load files
+
         cal.bind("<<CalendarSelected>>", lambda e: load_files())
-        
+
         def go_today():
             today = datetime.now()
             cal.selection_set(today)
-            load_files()  # Auto-load when clicking Today button
-            
-        btn_today = ctk.CTkButton(cal_container, text="Today", width=80, height=24, 
+            load_files()
+
+        btn_today = ctk.CTkButton(cal_container, text="Today", width=80, height=24,
                                   fg_color="transparent", border_width=1, border_color="gray",
                                   command=go_today)
         btn_today.pack(pady=(5, 0))
 
-        # Load Folder Logic & Status
-        grouped_files = {} 
-        file_vars = [] 
-        
-        # Status Label (Moved to Sidebar)
+        grouped_files = {}
+        file_vars = []
+
         lbl_status = ctk.CTkLabel(left_panel, text="Ready", font=("", 13), text_color="gray")
-        # Kept pack later for button placement flow
-        
-        # === RIGHT MAIN AREA (Content) ===
+
+        # =====================================================
+        # BY DATE: RIGHT PANEL
+        # =====================================================
         right_panel = ctk.CTkFrame(window, fg_color="transparent")
-        right_panel.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
-        right_panel.grid_rowconfigure(1, weight=1) # Scroll list expands
+        right_panel.grid(row=1, column=1, sticky="nsew", padx=20, pady=20)
+        right_panel.grid_rowconfigure(1, weight=1)
         right_panel.grid_columnconfigure(0, weight=1)
 
-        # 1. Model Selector (Top of Right)
         seg_models = ctk.CTkSegmentedButton(right_panel)
         seg_models.grid(row=0, column=0, sticky="ew", pady=(0, 15))
 
-        # 2. List Area (Middle of Right)
         scroll_frame = ctk.CTkScrollableFrame(right_panel)
         scroll_frame.grid(row=1, column=0, sticky="nsew")
-        
-        # --- Logic Functions ---
+
+        # --- By Date Logic ---
 
         def update_list(selected_model):
-            # Clear existing list items
             for widget in scroll_frame.winfo_children():
                 widget.destroy()
             file_vars.clear()
-            
+
             if selected_model == "No Data" or selected_model not in grouped_files:
                 ctk.CTkLabel(scroll_frame, text="No files found.", text_color="gray").pack(pady=50)
                 return
 
             tickers = grouped_files[selected_model]
-            
-            # Special Handling for TV Code categories
+
             if "TV Code" in selected_model:
-                # Load ticker groups
                 ticker_groups_std = {}
                 ticker_groups_cme = {}
-                
                 if hasattr(self, 'ticker_filepath') and self.ticker_filepath and os.path.exists(self.ticker_filepath):
                     ticker_groups_std = utils.load_tickers_with_groups(self.ticker_filepath)
-                
                 if hasattr(self, 'cme_ticker_filepath') and self.cme_ticker_filepath and os.path.exists(self.cme_ticker_filepath):
                     ticker_groups_cme = utils.load_tickers_with_groups(self.cme_ticker_filepath)
-                
-                # Determine which ticker groups to use based on model
+
                 ticker_groups = ticker_groups_cme if "CME" in selected_model else ticker_groups_std
-                
-                # 1. Collect all files and sort by time (Oldest -> Newest) so latest overwrites earlier
+
                 tv_files = []
                 for file_key in tickers:
                     fp, dt_obj = tickers[file_key]
                     tv_files.append((dt_obj, fp))
-                
-                tv_files.sort(key=lambda x: x[0]) # Sort by datetime ascending
+                tv_files.sort(key=lambda x: x[0])
 
-                merged_tv_items = {} # ticker -> content (Last one wins)
-
+                merged_tv_items = {}
                 try:
                     for _, fp in tv_files:
                         try:
                             with open(fp, "r", encoding="utf-8") as f:
                                 lines = f.readlines()
-                            
                             for line in lines:
                                 line = line.strip()
-                                if not line: continue
-                                
-                                # Heuristic to extract Ticker
+                                if not line:
+                                    continue
                                 ticker_label = "Unknown"
                                 if '"' in line:
                                     parts_q = line.split('"')
                                     if len(parts_q) > 1:
                                         ticker_label = parts_q[1]
                                 else:
-                                    # Fallback: First word
                                     ticker_label = line.split(' ')[0].replace(":", "")
-                                
                                 merged_tv_items[ticker_label] = line
                         except Exception as e:
                             print(f"Error reading {fp}: {e}")
 
                     if not merged_tv_items:
-                         ctk.CTkLabel(scroll_frame, text="No content found in TV Code files.", text_color="gray").pack(pady=20)
-                         return
+                        ctk.CTkLabel(scroll_frame, text="No content found in TV Code files.", text_color="gray").pack(pady=20)
+                        return
 
-                    # Group TV tickers by their groups
-                    grouped_tv = {}  # group_name -> [(ticker, content)]
-                    ungrouped_tv = []  # Tickers without a group
-                    
+                    grouped_tv = {}
+                    ungrouped_tv = []
                     for ticker in sorted(merged_tv_items.keys()):
                         content = merged_tv_items[ticker]
-                        
-                        # Find which group this ticker belongs to
                         found_group = None
                         for group_name, ticker_list in ticker_groups.items():
                             if ticker in ticker_list:
                                 found_group = group_name
                                 break
-                        
                         if found_group:
                             if found_group not in grouped_tv:
                                 grouped_tv[found_group] = []
                             grouped_tv[found_group].append((ticker, content))
                         else:
                             ungrouped_tv.append((ticker, content))
-                    
-                    # Display grouped TV tickers with collapsible frames
+
                     for group_name in sorted(grouped_tv.keys()):
                         group_items = grouped_tv[group_name]
-                        
-                        # Container for this group (header + content)
                         group_container = ctk.CTkFrame(scroll_frame, fg_color="transparent")
                         group_container.pack(fill="x", padx=10, pady=(10, 5))
-                        
-                        # Group header frame
                         group_header = ctk.CTkFrame(group_container, fg_color=("#3B3B3B", "#2B2B2B"), corner_radius=5)
                         group_header.pack(fill="x", pady=(0, 2))
-                        
-                        # Group content frame
                         group_content = ctk.CTkFrame(group_container, fg_color="transparent")
                         group_content.pack(fill="x", pady=(0, 0))
-                        
-                        # Collapsible state
                         is_visible = ctk.BooleanVar(value=True)
-                        
-                        # Track checkboxes in this group
                         tv_group_checkboxes = []
-                        
-                        # Create toggle function
+
                         def create_tv_toggle_function(content, visible_var, button):
                             def toggle():
                                 if visible_var.get():
@@ -835,36 +813,21 @@ class LietaApp(ctk.CTk):
                                     button.configure(text=button.cget("text").replace("▶", "▼"))
                                     visible_var.set(True)
                             return toggle
-                        
-                        # Header layout: select all button on left, toggle button in middle
-                        btn_select_group = ctk.CTkButton(
-                            group_header,
-                            text="☑",
-                            width=30,
-                            height=28,
-                            command=None,
-                            fg_color="transparent",
-                            hover_color=("#4A4A4A", "#3A3A3A"),
-                            font=("", 16)
-                        )
+
+                        btn_select_group = ctk.CTkButton(group_header, text="☑", width=30, height=28,
+                                                         command=None, fg_color="transparent",
+                                                         hover_color=("#4A4A4A", "#3A3A3A"), font=("", 16))
                         btn_select_group.pack(side="left", padx=(5, 0), pady=5)
-                        
                         header_middle = ctk.CTkFrame(group_header, fg_color="transparent")
                         header_middle.pack(side="left", fill="x", expand=True)
-                        
-                        toggle_btn = ctk.CTkButton(
-                            header_middle,
-                            text=f"▼ {group_name} ({len(group_items)} tickers)",
-                            command=None,
-                            fg_color="transparent",
-                            hover_color=("#4A4A4A", "#3A3A3A"),
-                            anchor="w",
-                            font=("", 13, "bold")
-                        )
+                        toggle_btn = ctk.CTkButton(header_middle,
+                                                   text=f"▼ {group_name} ({len(group_items)} tickers)",
+                                                   command=None, fg_color="transparent",
+                                                   hover_color=("#4A4A4A", "#3A3A3A"),
+                                                   anchor="w", font=("", 13, "bold"))
                         toggle_btn.pack(side="left", fill="x", expand=True, padx=5, pady=5)
                         toggle_btn.configure(command=create_tv_toggle_function(group_content, is_visible, toggle_btn))
-                        
-                        # Select All button function for this group
+
                         def create_tv_group_select_all(checkboxes):
                             def select_all_group():
                                 all_selected = all(var.get() for var, _ in checkboxes)
@@ -872,152 +835,96 @@ class LietaApp(ctk.CTk):
                                 for var, _ in checkboxes:
                                     var.set(new_state)
                             return select_all_group
-                        
-                        # Display tickers in group
+
                         for t_label, content in group_items:
                             var = ctk.BooleanVar(value=False)
-                            chk = ctk.CTkCheckBox(group_content, text=f"{t_label}", variable=var, font=("Consolas", 13, "bold"), width=100)
+                            chk = ctk.CTkCheckBox(group_content, text=f"{t_label}", variable=var,
+                                                  font=("Consolas", 13, "bold"), width=100)
                             chk.pack(anchor="w", padx=20, pady=1)
                             file_vars.append((var, ("TV_DATA", t_label, content)))
                             tv_group_checkboxes.append((var, ("TV_DATA", t_label, content)))
-                        
-                        # Set the select all command
                         btn_select_group.configure(command=create_tv_group_select_all(tv_group_checkboxes))
-                    
-                    # Display ungrouped TV tickers
+
                     if ungrouped_tv:
-                        if grouped_tv:  # Only show header if there are grouped items
+                        if grouped_tv:
                             other_header = ctk.CTkFrame(scroll_frame, fg_color=("#3B3B3B", "#2B2B2B"), corner_radius=5)
                             other_header.pack(fill="x", padx=10, pady=(10, 2))
-                            ctk.CTkLabel(
-                                other_header,
-                                text=f"其他 / Other ({len(ungrouped_tv)} tickers)",
-                                font=("", 13, "bold"),
-                                anchor="w"
-                            ).pack(fill="x", padx=10, pady=5)
-                        
+                            ctk.CTkLabel(other_header, text=f"其他 / Other ({len(ungrouped_tv)} tickers)",
+                                         font=("", 13, "bold"), anchor="w").pack(fill="x", padx=10, pady=5)
                         for t_label, content in ungrouped_tv:
                             var = ctk.BooleanVar(value=False)
-                            
                             item_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
                             item_frame.pack(fill="x", pady=2, padx=10)
-
-                            chk = ctk.CTkCheckBox(item_frame, text=f"{t_label}", variable=var, font=("Consolas", 14, "bold"), width=100)
+                            chk = ctk.CTkCheckBox(item_frame, text=f"{t_label}", variable=var,
+                                                  font=("Consolas", 14, "bold"), width=100)
                             chk.pack(anchor="w", padx=10)
-
                             file_vars.append((var, ("TV_DATA", t_label, content)))
-                        
+
                 except Exception as e:
-                     ctk.CTkLabel(scroll_frame, text=f"Error processing TV Code files: {e}", text_color="red").pack(pady=10)
+                    ctk.CTkLabel(scroll_frame, text=f"Error processing TV Code files: {e}", text_color="red").pack(pady=10)
                 return
 
-            # Normal Files - Group by Ticker Groups
-            # Try to load ticker groups for organization
             ticker_groups_std = {}
             ticker_groups_cme = {}
-            
             if hasattr(self, 'ticker_filepath') and self.ticker_filepath and os.path.exists(self.ticker_filepath):
                 ticker_groups_std = utils.load_tickers_with_groups(self.ticker_filepath)
-            
             if hasattr(self, 'cme_ticker_filepath') and self.cme_ticker_filepath and os.path.exists(self.cme_ticker_filepath):
                 ticker_groups_cme = utils.load_tickers_with_groups(self.cme_ticker_filepath)
-            
-            # Determine which ticker groups to use based on model
             ticker_groups = ticker_groups_cme if "CME" in selected_model else ticker_groups_std
-            
-            # Group tickers by their groups
-            grouped_tickers = {}  # group_name -> [(ticker, filepath, datetime)]
-            ungrouped_tickers = []  # Tickers without a group
-            
+
+            grouped_tickers = {}
+            ungrouped_tickers = []
             for ticker in tickers.keys():
                 fp, dt_obj = tickers[ticker]
-                
-                # Find which group this ticker belongs to
                 found_group = None
                 for group_name, ticker_list in ticker_groups.items():
                     if ticker in ticker_list:
                         found_group = group_name
                         break
-                
                 if found_group:
                     if found_group not in grouped_tickers:
                         grouped_tickers[found_group] = []
                     grouped_tickers[found_group].append((ticker, fp, dt_obj))
                 else:
                     ungrouped_tickers.append((ticker, fp, dt_obj))
-            
-            # Display grouped tickers with collapsible frames
+
             for group_name in sorted(grouped_tickers.keys()):
                 group_items = grouped_tickers[group_name]
-                
-                # Container for this group (header + content)
                 group_container = ctk.CTkFrame(scroll_frame, fg_color="transparent")
                 group_container.pack(fill="x", padx=10, pady=(10, 5))
-                
-                # Group header frame
                 group_header = ctk.CTkFrame(group_container, fg_color=("#3B3B3B", "#2B2B2B"), corner_radius=5)
                 group_header.pack(fill="x", pady=(0, 2))
-                
-                # Group content frame (tickers list) - child of container, not scroll_frame
                 group_content = ctk.CTkFrame(group_container, fg_color="transparent")
                 group_content.pack(fill="x", pady=(0, 0))
-                
-                # Collapsible state
                 is_visible = ctk.BooleanVar(value=True)
-                
-                # Track checkboxes in this group
                 group_checkboxes = []
-                
-                # Create toggle function with proper closure
+
                 def create_toggle_function(content, visible_var, button):
                     def toggle():
                         if visible_var.get():
-                            # Hide content
                             content.pack_forget()
-                            current_text = button.cget("text")
-                            new_text = current_text.replace("▼", "▶")
-                            button.configure(text=new_text)
+                            button.configure(text=button.cget("text").replace("▼", "▶"))
                             visible_var.set(False)
                         else:
-                            # Show content
                             content.pack(fill="x", pady=(0, 0))
-                            current_text = button.cget("text")
-                            new_text = current_text.replace("▶", "▼")
-                            button.configure(text=new_text)
+                            button.configure(text=button.cget("text").replace("▶", "▼"))
                             visible_var.set(True)
                     return toggle
-                
-                # Header layout: select all button on left, toggle button in middle
-                btn_select_group = ctk.CTkButton(
-                    group_header,
-                    text="☑",
-                    width=30,
-                    height=28,
-                    command=None,  # Will be set after checkboxes are created
-                    fg_color="transparent",
-                    hover_color=("#4A4A4A", "#3A3A3A"),
-                    font=("", 16)
-                )
+
+                btn_select_group = ctk.CTkButton(group_header, text="☑", width=30, height=28,
+                                                 command=None, fg_color="transparent",
+                                                 hover_color=("#4A4A4A", "#3A3A3A"), font=("", 16))
                 btn_select_group.pack(side="left", padx=(5, 0), pady=5)
-                
                 header_middle = ctk.CTkFrame(group_header, fg_color="transparent")
                 header_middle.pack(side="left", fill="x", expand=True)
-                
-                toggle_btn = ctk.CTkButton(
-                    header_middle,
-                    text=f"▼ {group_name} ({len(group_items)} tickers)",
-                    command=None,  # Will be set below
-                    fg_color="transparent",
-                    hover_color=("#4A4A4A", "#3A3A3A"),
-                    anchor="w",
-                    font=("", 13, "bold")
-                )
+                toggle_btn = ctk.CTkButton(header_middle,
+                                           text=f"▼ {group_name} ({len(group_items)} tickers)",
+                                           command=None, fg_color="transparent",
+                                           hover_color=("#4A4A4A", "#3A3A3A"),
+                                           anchor="w", font=("", 13, "bold"))
                 toggle_btn.pack(side="left", fill="x", expand=True, padx=5, pady=5)
-                
-                # Set the toggle command
                 toggle_btn.configure(command=create_toggle_function(group_content, is_visible, toggle_btn))
-                
-                # Select All button function for this group
+
                 def create_group_select_all(checkboxes):
                     def select_all_group():
                         all_selected = all(var.get() for var, _ in checkboxes)
@@ -1025,178 +932,127 @@ class LietaApp(ctk.CTk):
                         for var, _ in checkboxes:
                             var.set(new_state)
                     return select_all_group
-                
-                # Sort tickers in group
-                group_items.sort(key=lambda x: x[0])  # Sort by ticker name
-                
+
+                group_items.sort(key=lambda x: x[0])
                 for ticker, fp, dt_obj in group_items:
                     time_str = dt_obj.strftime('%H:%M:%S')
                     var = ctk.BooleanVar(value=False)
-                    
-                    chk = ctk.CTkCheckBox(
-                        group_content,
-                        text=f"[{time_str}]  {ticker}",
-                        variable=var,
-                        font=("Consolas", 13),
-                        height=28,
-                        width=500
-                    )
+                    chk = ctk.CTkCheckBox(group_content, text=f"[{time_str}]  {ticker}",
+                                          variable=var, font=("Consolas", 13), height=28, width=500)
                     chk.pack(anchor="w", padx=20, pady=1, fill="x")
                     file_vars.append((var, fp))
                     group_checkboxes.append((var, fp))
-                
-                # Now set the select all command with the populated checkboxes
                 btn_select_group.configure(command=create_group_select_all(group_checkboxes))
-            
-            # Display ungrouped tickers separately if any
+
             if ungrouped_tickers:
-                if grouped_tickers:  # Only show header if there are grouped items
+                if grouped_tickers:
                     other_header = ctk.CTkFrame(scroll_frame, fg_color=("#3B3B3B", "#2B2B2B"), corner_radius=5)
                     other_header.pack(fill="x", padx=10, pady=(10, 2))
-                    ctk.CTkLabel(
-                        other_header,
-                        text=f"其他 / Other ({len(ungrouped_tickers)} tickers)",
-                        font=("", 13, "bold"),
-                        anchor="w"
-                    ).pack(fill="x", padx=10, pady=5)
-                
-                ungrouped_tickers.sort(key=lambda x: x[0])  # Sort by ticker name
-                
+                    ctk.CTkLabel(other_header, text=f"其他 / Other ({len(ungrouped_tickers)} tickers)",
+                                 font=("", 13, "bold"), anchor="w").pack(fill="x", padx=10, pady=5)
+                ungrouped_tickers.sort(key=lambda x: x[0])
                 for ticker, fp, dt_obj in ungrouped_tickers:
                     time_str = dt_obj.strftime('%H:%M:%S')
                     var = ctk.BooleanVar(value=False)
-                    
-                    chk = ctk.CTkCheckBox(
-                        scroll_frame,
-                        text=f"[{time_str}]  {ticker}",
-                        variable=var,
-                        font=("Consolas", 14),
-                        height=30,
-                        width=500
-                    )
+                    chk = ctk.CTkCheckBox(scroll_frame, text=f"[{time_str}]  {ticker}",
+                                          variable=var, font=("Consolas", 14), height=30, width=500)
                     chk.pack(anchor="w", padx=10, pady=2, fill="x")
                     file_vars.append((var, fp))
 
-
         def load_files():
             try:
-                # Calendar.get_date() returns a string based on date_pattern
                 date_str = cal.get_date()
                 target_date = datetime.strptime(date_str, "%Y-%m-%d")
-                
-                search_str = target_date.strftime("%Y%m%d") # Format used in filenames
+                search_str = target_date.strftime("%Y%m%d")
             except Exception as e:
                 import tkinter.messagebox
                 tkinter.messagebox.showerror("Error", f"Invalid date: {e}")
                 return
 
             grouped_files.clear()
-            
-            # Scan logic
             try:
                 for root, dirs, files in os.walk(self.download_folder):
-                     for file in files:
-                          # Check if file has target date string
-                          if search_str in file and file.endswith(('.html', '.txt', '.csv', '.pdf', '.png')):
-                              fp = os.path.join(root, file)
-                              try:
-                                    # Parsing structure
-                                    rel_path = os.path.relpath(fp, self.download_folder)
-                                    parts = rel_path.split(os.sep)
-                                    
-                                    model_name = "Other"
-                                    ticker_name = file # Default
-                                    
-                                    # Heuristics
-                                    if parts[0] == "CME":
-                                        if len(parts) >= 3:
-                                            model_name = f"CME - {parts[1]}"
-                                            ticker_name = parts[2]
-                                        elif "TV Code" in parts or file.lower().startswith("tv_codes"):
-                                            model_name = "CME - TV Code"
-                                            ticker_name = f"File_{file}" # Unique key to keep all files
+                    for file in files:
+                        if search_str in file and file.endswith(('.html', '.txt', '.csv', '.pdf', '.png')):
+                            fp = os.path.join(root, file)
+                            try:
+                                rel_path = os.path.relpath(fp, self.download_folder)
+                                parts = rel_path.split(os.sep)
+                                model_name = "Other"
+                                ticker_name = file
+                                if parts[0] == "CME":
+                                    if len(parts) >= 3:
+                                        model_name = f"CME - {parts[1]}"
+                                        ticker_name = parts[2]
+                                    elif "TV Code" in parts or file.lower().startswith("tv_codes"):
+                                        model_name = "CME - TV Code"
+                                        ticker_name = f"File_{file}"
+                                else:
+                                    if len(parts) >= 2:
+                                        model_name = parts[0]
+                                        ticker_name = parts[1]
+                                    elif "TV Code" in parts or file.lower().startswith("tv_codes"):
+                                        model_name = "TV Code"
+                                        ticker_name = f"File_{file}"
+                                try:
+                                    time_part = file.split(search_str + "_")[1].split(".")[0]
+                                    if len(time_part) >= 6:
+                                        dt_time = datetime.strptime(time_part[:6], "%H%M%S")
                                     else:
-                                        if len(parts) >= 2:
-                                            model_name = parts[0]
-                                            ticker_name = parts[1]
-                                        elif "TV Code" in parts or file.lower().startswith("tv_codes"): # Standard TV Code
-                                            model_name = "TV Code"
-                                            ticker_name = f"File_{file}"
-    
-                                    # Extract time from filename
-                                    try:
-                                        time_part = file.split(search_str + "_")[1].split(".")[0]
-                                        if len(time_part) >= 6:
-                                            dt_time = datetime.strptime(time_part[:6], "%H%M%S")
-                                        else:
-                                            dt_time = datetime.now() # Fallback
-                                    except:
-                                        mnow = os.path.getmtime(fp)
-                                        dt_time = datetime.fromtimestamp(mnow)
-                                    
-                                    if model_name not in grouped_files:
-                                        grouped_files[model_name] = {}
-                                    
-                                    # Keep latest file for this ticker
-                                    if ticker_name not in grouped_files[model_name] or dt_time > grouped_files[model_name][ticker_name][1]:
-                                        grouped_files[model_name][ticker_name] = (fp, dt_time)
-                                        
-                              except Exception:
-                                  pass
+                                        dt_time = datetime.now()
+                                except Exception:
+                                    mnow = os.path.getmtime(fp)
+                                    dt_time = datetime.fromtimestamp(mnow)
+                                if model_name not in grouped_files:
+                                    grouped_files[model_name] = {}
+                                if ticker_name not in grouped_files[model_name] or dt_time > grouped_files[model_name][ticker_name][1]:
+                                    grouped_files[model_name][ticker_name] = (fp, dt_time)
+                            except Exception:
+                                pass
             except Exception as e:
                 print(f"Error scanning files: {e}")
 
-            # Update UI Status
             total_files = sum(len(v) for v in grouped_files.values())
             lbl_status.configure(text=f"Found {total_files} files ({date_str})")
-            
             sorted_models = sorted(grouped_files.keys())
             if not sorted_models:
-                 sorted_models = ["No Data"]
-
+                sorted_models = ["No Data"]
             seg_models.configure(values=sorted_models, command=lambda v: update_list(v))
             seg_models.set(sorted_models[0])
             update_list(sorted_models[0])
 
-        # Button in Sidebar
-        btn_refresh = ctk.CTkButton(left_panel, text="Load / Refresh Files", width=180, height=35, 
+        btn_refresh = ctk.CTkButton(left_panel, text="Load / Refresh Files", width=180, height=35,
                                     font=("", 14, "bold"), fg_color="#3B8ED0", hover_color="#36719F",
                                     command=lambda: load_files())
         btn_refresh.pack(pady=(20, 10))
         lbl_status.pack(pady=5)
 
-        # --- Bottom Actions (Bottom of Right Panel) ---
         btn_frame = ctk.CTkFrame(right_panel, fg_color="transparent")
         btn_frame.grid(row=2, column=0, sticky="ew", pady=(15, 0))
 
         def select_all():
-             for v, _ in file_vars: v.set(True)
+            for v, _ in file_vars:
+                v.set(True)
 
         def deselect_all():
-             for v, _ in file_vars: v.set(False)
+            for v, _ in file_vars:
+                v.set(False)
 
         def open_selected():
             tv_data_to_show = []
-            
             for v, data in file_vars:
                 if v.get():
                     try:
                         if isinstance(data, tuple) and data[0] == "TV_DATA":
-                            # Collect TV Data for aggregation
                             tv_data_to_show.append(data)
                         else:
-                            # Normal file path - open immediately
                             self.open_file_cross_platform(data)
                     except Exception as e:
                         print(f"Error opening item: {e}")
-            
-            # Handle aggregated TV Data
             if tv_data_to_show:
                 try:
                     import tempfile
-                    # Create one single temp file for all selected tickers
-                    fd, path = tempfile.mkstemp(prefix=f"TV_Selected_", suffix=".txt", text=True)
-                    
+                    fd, path = tempfile.mkstemp(prefix="TV_Selected_", suffix=".txt", text=True)
                     with os.fdopen(fd, 'w', encoding='utf-8') as tmp:
                         for _, t_label, content in tv_data_to_show:
                             clean_content = content
@@ -1205,19 +1061,560 @@ class LietaApp(ctk.CTk):
                                 clean_content = clean_content[len(prefix):].strip()
                             elif clean_content.startswith(t_label):
                                 clean_content = clean_content[len(t_label):].strip()
-                            
                             tmp.write(f"{t_label}:\n\n")
                             tmp.write(f"{clean_content}\n\n")
-                            
                     self.open_file_cross_platform(path)
                 except Exception as e:
                     print(f"Error creating aggregate TV file: {e}")
 
         ctk.CTkButton(btn_frame, text="Select All", command=select_all, width=120).pack(side="left", padx=20)
         ctk.CTkButton(btn_frame, text="Deselect All", command=deselect_all, width=120).pack(side="left", padx=5)
-        ctk.CTkButton(btn_frame, text="Open Selected", command=open_selected, width=150, fg_color="#2CC985", hover_color="#229C68", text_color="white").pack(side="right", padx=20)
+        ctk.CTkButton(btn_frame, text="Open Selected", command=open_selected, width=150,
+                      fg_color="#2CC985", hover_color="#229C68", text_color="white").pack(side="right", padx=20)
 
-        # Init list with default date
+        # =====================================================
+        # BY TICKER & MODEL: LEFT PANEL
+        # =====================================================
+        left_panel_bt = ctk.CTkFrame(window, width=300, corner_radius=0)
+        left_panel_bt.grid_columnconfigure(0, weight=1)
+        # Not gridded initially (hidden)
+
+        ctk.CTkLabel(left_panel_bt, text="By Ticker & Model", font=("", 16, "bold"),
+                     text_color="#DCE4EE").pack(pady=(15, 5))
+
+        # --- Ticker Search ---
+        ticker_section = ctk.CTkFrame(left_panel_bt, fg_color="transparent")
+        ticker_section.pack(fill="x", padx=12, pady=(5, 0))
+        ticker_section.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(ticker_section, text="Ticker:", font=("", 13, "bold"), anchor="w").grid(
+            row=0, column=0, sticky="w", pady=(5, 2))
+
+        bt_ticker_var = ctk.StringVar()
+        bt_entry_ticker = ctk.CTkEntry(ticker_section, textvariable=bt_ticker_var,
+                                       placeholder_text="Type to search...", height=32)
+        bt_entry_ticker.grid(row=1, column=0, sticky="ew", pady=(0, 2))
+
+        # Dropdown listbox
+        bt_dropdown_frame = ctk.CTkFrame(ticker_section, fg_color=("#EBEBEB", "#2B2B2B"),
+                                          corner_radius=5, border_width=1, border_color="gray")
+        bt_listbox = tk.Listbox(bt_dropdown_frame, height=7, font=("Consolas", 12),
+                                bg="#2B2B2B", fg="white", selectbackground="#3B8ED0",
+                                selectforeground="white", borderwidth=0, highlightthickness=0,
+                                activestyle="none")
+        bt_listbox_scroll = tk.Scrollbar(bt_dropdown_frame, orient="vertical", command=bt_listbox.yview)
+        bt_listbox.configure(yscrollcommand=bt_listbox_scroll.set)
+        bt_listbox_scroll.pack(side="right", fill="y")
+        bt_listbox.pack(side="left", fill="both", expand=True, padx=2, pady=2)
+        # bt_dropdown_frame is NOT gridded yet
+
+        # Collect all tickers from both files
+        all_tickers_std = []
+        all_tickers_cme = []
+        tickers_cme_set = set()
+        if hasattr(self, 'ticker_filepath') and self.ticker_filepath and os.path.exists(self.ticker_filepath):
+            std_groups = utils.load_tickers_with_groups(self.ticker_filepath)
+            for grp, lst in std_groups.items():
+                all_tickers_std.extend(lst)
+        if hasattr(self, 'cme_ticker_filepath') and self.cme_ticker_filepath and os.path.exists(self.cme_ticker_filepath):
+            cme_groups = utils.load_tickers_with_groups(self.cme_ticker_filepath)
+            for grp, lst in cme_groups.items():
+                all_tickers_cme.extend(lst)
+                tickers_cme_set.update(lst)
+
+        all_tickers_combined = sorted(set(all_tickers_std + all_tickers_cme))
+
+        def bt_show_dropdown():
+            bt_dropdown_frame.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+
+        def bt_hide_dropdown_now():
+            bt_dropdown_frame.grid_remove()
+
+        def bt_update_dropdown(event=None):
+            query = bt_ticker_var.get().strip().upper()
+            bt_listbox.delete(0, tk.END)
+            matches = [t for t in all_tickers_combined if query in t.upper()] if query else all_tickers_combined
+            for t in matches[:60]:
+                bt_listbox.insert(tk.END, t)
+            if matches:
+                bt_show_dropdown()
+            else:
+                bt_hide_dropdown_now()
+
+        def bt_select_ticker_from_list(event=None):
+            sel = bt_listbox.curselection()
+            if sel:
+                ticker_val = bt_listbox.get(sel[0])
+                bt_ticker_var.set(ticker_val)
+                bt_hide_dropdown_now()
+                bt_on_ticker_selected(ticker_val)
+                bt_entry_ticker.focus_set()
+
+        def bt_entry_on_focusout(event=None):
+            def _maybe_hide():
+                try:
+                    fw = window.focus_get()
+                    if fw is not bt_listbox:
+                        bt_hide_dropdown_now()
+                except Exception:
+                    pass
+            window.after(150, _maybe_hide)
+
+        def bt_entry_on_down(event=None):
+            if bt_listbox.size() > 0:
+                bt_listbox.focus_set()
+                bt_listbox.selection_clear(0, tk.END)
+                bt_listbox.selection_set(0)
+                bt_listbox.activate(0)
+
+        def bt_entry_on_return(event=None):
+            if bt_listbox.size() > 0:
+                bt_listbox.selection_clear(0, tk.END)
+                bt_listbox.selection_set(0)
+                bt_select_ticker_from_list()
+
+        bt_entry_ticker.bind("<KeyRelease>", bt_update_dropdown)
+        bt_entry_ticker.bind("<FocusOut>", bt_entry_on_focusout)
+        bt_entry_ticker.bind("<Escape>", lambda e: bt_hide_dropdown_now())
+        bt_entry_ticker.bind("<Down>", bt_entry_on_down)
+        bt_entry_ticker.bind("<Return>", bt_entry_on_return)
+        bt_listbox.bind("<<ListboxSelect>>", bt_select_ticker_from_list)
+        bt_listbox.bind("<Return>", bt_select_ticker_from_list)
+        bt_listbox.bind("<Escape>", lambda e: (bt_hide_dropdown_now(), bt_entry_ticker.focus_set()))
+
+        # --- Model Checkboxes ---
+        model_section = ctk.CTkFrame(left_panel_bt, fg_color="transparent")
+        model_section.pack(fill="x", padx=12, pady=(10, 0))
+        model_section.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(model_section, text="Models:", font=("", 13, "bold"), anchor="w").grid(
+            row=0, column=0, sticky="w", pady=(4, 3))
+
+        model_chk_frame = ctk.CTkFrame(model_section, fg_color=("#F0F0F0", "#2A2A2A"), corner_radius=6)
+        model_chk_frame.grid(row=1, column=0, sticky="ew")
+        model_chk_frame.grid_columnconfigure(0, weight=1)
+        model_chk_frame.grid_columnconfigure(1, weight=1)
+
+        _standard_models = ["Gamma", "Delta", "Theta", "Term", "Smile", "Levels", "Table", "TV Code"]
+        _cme_models = ["Gamma", "Delta", "Smile", "Term", "TV Code"]
+
+        bt_model_vars = {}
+
+        def bt_rebuild_model_checkboxes(is_cme):
+            for w in model_chk_frame.winfo_children():
+                w.destroy()
+            bt_model_vars.clear()
+            models = _cme_models if is_cme else _standard_models
+            for i, m in enumerate(models):
+                var = ctk.BooleanVar(value=False)
+                chk = ctk.CTkCheckBox(model_chk_frame, text=m, variable=var, font=("", 12))
+                chk.grid(row=i // 2, column=i % 2, sticky="w", padx=10, pady=3)
+                bt_model_vars[m] = var
+
+        bt_rebuild_model_checkboxes(False)
+
+        def bt_on_ticker_selected(ticker_val):
+            is_cme = ticker_val in tickers_cme_set
+            bt_rebuild_model_checkboxes(is_cme)
+
+        # --- Date Range ---
+        date_section = ctk.CTkFrame(left_panel_bt, fg_color="transparent")
+        date_section.pack(fill="x", padx=12, pady=(10, 0))
+
+        ctk.CTkLabel(date_section, text="Date Range:", font=("", 13, "bold"), anchor="w").pack(
+            fill="x", pady=(4, 3))
+
+        def make_date_row(parent, label_text, default_date_str):
+            row_frame = ctk.CTkFrame(parent, fg_color="transparent")
+            row_frame.pack(fill="x", pady=3)
+            ctk.CTkLabel(row_frame, text=label_text, width=46, font=("", 12), anchor="w").pack(side="left")
+            dvar = ctk.StringVar(value=default_date_str)
+            entry = ctk.CTkEntry(row_frame, textvariable=dvar, width=105, height=30,
+                                 font=("Consolas", 12))
+            entry.pack(side="left", padx=(2, 4))
+
+            def open_cal_popup():
+                popup = ctk.CTkToplevel(window)
+                popup.title(label_text.strip())
+                popup.geometry("310x270")
+                popup.transient(window)
+                popup.grab_set()
+                popup.lift()
+                popup.focus_force()
+                try:
+                    cur_val = datetime.strptime(dvar.get(), "%Y-%m-%d")
+                except Exception:
+                    cur_val = datetime.now()
+                popup_cal = Calendar(popup, selectmode='day', date_pattern='yyyy-mm-dd',
+                                     font=('Arial', 14), cursor="hand2")
+                popup_cal.selection_set(cur_val)
+                popup_cal.pack(padx=10, pady=10)
+
+                def on_popup_select(e=None):
+                    dvar.set(popup_cal.get_date())
+                    popup.destroy()
+
+                popup_cal.bind("<<CalendarSelected>>", on_popup_select)
+                ctk.CTkButton(popup, text="OK", width=80, command=on_popup_select).pack(pady=(0, 8))
+
+            btn_cal = ctk.CTkButton(row_frame, text="📅", width=32, height=30, font=("", 14),
+                                    fg_color="transparent", border_width=1, border_color="gray",
+                                    command=open_cal_popup)
+            btn_cal.pack(side="left")
+            return dvar
+
+        _today_str = datetime.now().strftime("%Y-%m-%d")
+        bt_start_date_var = make_date_row(date_section, "Start:", _today_str)
+        bt_end_date_var = make_date_row(date_section, "End:  ", _today_str)
+
+        # --- Search Button & Status ---
+        bt_lbl_status = ctk.CTkLabel(left_panel_bt, text="Ready", font=("", 12), text_color="gray")
+        bt_lbl_status.pack(pady=(10, 2))
+
+        btn_bt_search = ctk.CTkButton(left_panel_bt, text="Search Files", width=180, height=35,
+                                      font=("", 14, "bold"), fg_color="#3B8ED0", hover_color="#36719F",
+                                      command=lambda: load_files_by_ticker())
+        btn_bt_search.pack(pady=(2, 10))
+
+        # =====================================================
+        # BY TICKER & MODEL: RIGHT PANEL
+        # =====================================================
+        right_panel_bt = ctk.CTkFrame(window, fg_color="transparent")
+        right_panel_bt.grid_rowconfigure(1, weight=1)
+        right_panel_bt.grid_columnconfigure(0, weight=1)
+        # Not gridded initially
+
+        seg_bt_models = ctk.CTkSegmentedButton(right_panel_bt)
+        seg_bt_models.grid(row=0, column=0, sticky="ew", pady=(0, 15))
+
+        bt_scroll_frame = ctk.CTkScrollableFrame(right_panel_bt)
+        bt_scroll_frame.grid(row=1, column=0, sticky="nsew")
+
+        bt_file_vars = []
+
+        bt_btn_frame = ctk.CTkFrame(right_panel_bt, fg_color="transparent")
+        bt_btn_frame.grid(row=2, column=0, sticky="ew", pady=(15, 0))
+
+        def bt_select_all():
+            for v, _ in bt_file_vars:
+                v.set(True)
+
+        def bt_deselect_all():
+            for v, _ in bt_file_vars:
+                v.set(False)
+
+        def bt_open_selected():
+            tv_data_to_show = []
+            for v, data in bt_file_vars:
+                if v.get():
+                    try:
+                        if isinstance(data, tuple) and data[0] == "TV_DATA":
+                            tv_data_to_show.append(data)
+                        else:
+                            self.open_file_cross_platform(data)
+                    except Exception as e:
+                        print(f"Error opening item: {e}")
+            if tv_data_to_show:
+                try:
+                    import tempfile
+                    fd, path = tempfile.mkstemp(prefix="TV_Selected_", suffix=".txt", text=True)
+                    with os.fdopen(fd, 'w', encoding='utf-8') as tmp:
+                        for item in tv_data_to_show:
+                            t_label = item[1]
+                            content = item[2]
+                            date_key = item[3] if len(item) > 3 else None
+                            date_stamp = date_key.replace("-", "") if date_key else ""
+                            clean_content = content
+                            prefix = f"{t_label}:"
+                            if clean_content.startswith(prefix):
+                                clean_content = clean_content[len(prefix):].strip()
+                            elif clean_content.startswith(t_label):
+                                clean_content = clean_content[len(t_label):].strip()
+                            header = f"{date_stamp} {t_label}:" if date_stamp else f"{t_label}:"
+                            tmp.write(f"{header}\n\n")
+                            tmp.write(f"{clean_content}\n\n")
+                    self.open_file_cross_platform(path)
+                except Exception as e:
+                    print(f"Error creating aggregate TV file: {e}")
+
+        ctk.CTkButton(bt_btn_frame, text="Select All", command=bt_select_all, width=120).pack(side="left", padx=20)
+        ctk.CTkButton(bt_btn_frame, text="Deselect All", command=bt_deselect_all, width=120).pack(side="left", padx=5)
+        ctk.CTkButton(bt_btn_frame, text="Open Selected", command=bt_open_selected, width=150,
+                      fg_color="#2CC985", hover_color="#229C68", text_color="white").pack(side="right", padx=20)
+
+        # --- By Ticker Scan Logic ---
+        def load_files_by_ticker():
+            import re as _re
+            ticker = bt_ticker_var.get().strip()
+            if not ticker:
+                import tkinter.messagebox
+                tkinter.messagebox.showwarning("Warning", "Please enter or select a ticker first.", parent=window)
+                return
+
+            selected_models = [m for m, var in bt_model_vars.items() if var.get()]
+            if not selected_models:
+                import tkinter.messagebox
+                tkinter.messagebox.showwarning("Warning", "Please select at least one model.", parent=window)
+                return
+
+            try:
+                start_date = datetime.strptime(bt_start_date_var.get().strip(), "%Y-%m-%d")
+                end_date = datetime.strptime(bt_end_date_var.get().strip(), "%Y-%m-%d")
+            except Exception as e:
+                import tkinter.messagebox
+                tkinter.messagebox.showerror("Error", f"Invalid date format (use YYYY-MM-DD): {e}", parent=window)
+                return
+
+            if start_date > end_date:
+                import tkinter.messagebox
+                tkinter.messagebox.showwarning("Warning", "Start date must be on or before end date.", parent=window)
+                return
+
+            is_cme = ticker in tickers_cme_set
+
+            # date_key -> model_name -> ticker_name -> (fp, dt_time)
+            bt_grouped = {}
+            bt_lbl_status.configure(text="Scanning...")
+            window.update_idletasks()
+
+            try:
+                for root, dirs, files in os.walk(self.download_folder):
+                    for file in files:
+                        if not file.endswith(('.html', '.txt', '.csv', '.pdf', '.png')):
+                            continue
+                        fp = os.path.join(root, file)
+                        try:
+                            rel_path = os.path.relpath(fp, self.download_folder)
+                            parts = rel_path.split(os.sep)
+
+                            model_name = "Other"
+                            ticker_name = file
+
+                            if parts[0] == "CME":
+                                if len(parts) >= 3:
+                                    model_name = f"CME - {parts[1]}"
+                                    ticker_name = parts[2]
+                                elif "TV Code" in parts or file.lower().startswith("tv_codes"):
+                                    model_name = "CME - TV Code"
+                                    ticker_name = f"File_{file}"
+                            else:
+                                if len(parts) >= 2:
+                                    model_name = parts[0]
+                                    ticker_name = parts[1]
+                                elif "TV Code" in parts or file.lower().startswith("tv_codes"):
+                                    model_name = "TV Code"
+                                    ticker_name = f"File_{file}"
+
+                            # Filter by CME vs standard
+                            if is_cme:
+                                if not model_name.startswith("CME - "):
+                                    continue
+                                raw_model = model_name[len("CME - "):]
+                            else:
+                                if model_name.startswith("CME - "):
+                                    continue
+                                raw_model = model_name
+
+                            if raw_model not in selected_models:
+                                continue
+
+                            # For non-TV-Code, filter by ticker name
+                            is_tv_code = "TV Code" in model_name
+                            if not is_tv_code and ticker_name != ticker:
+                                continue
+
+                            # Extract date and time from filename
+                            date_match = _re.search(r'(\d{8})_(\d{6})', file)
+                            if not date_match:
+                                continue
+                            file_date_str = date_match.group(1)
+                            time_str_raw = date_match.group(2)
+                            try:
+                                file_date = datetime.strptime(file_date_str, "%Y%m%d")
+                                file_dt = datetime.strptime(file_date_str + "_" + time_str_raw, "%Y%m%d_%H%M%S")
+                            except Exception:
+                                continue
+
+                            if not (start_date <= file_date <= end_date):
+                                continue
+
+                            date_key = file_date.strftime("%Y-%m-%d")
+                            if date_key not in bt_grouped:
+                                bt_grouped[date_key] = {}
+                            if model_name not in bt_grouped[date_key]:
+                                bt_grouped[date_key][model_name] = {}
+
+                            if is_tv_code:
+                                # Keep all TV Code files (will be merged in display)
+                                bt_grouped[date_key][model_name][f"File_{file}"] = (fp, file_dt)
+                            else:
+                                # Keep latest file per ticker per day
+                                if (ticker_name not in bt_grouped[date_key][model_name] or
+                                        file_dt > bt_grouped[date_key][model_name][ticker_name][1]):
+                                    bt_grouped[date_key][model_name][ticker_name] = (fp, file_dt)
+
+                        except Exception:
+                            pass
+            except Exception as e:
+                print(f"Error scanning files: {e}")
+
+            total = sum(len(t) for d in bt_grouped.values() for t in d.values())
+            date_count = len(bt_grouped)
+            bt_lbl_status.configure(text=f"Found {total} file(s) across {date_count} date(s)")
+            update_list_by_ticker(bt_grouped, ticker, is_cme)
+
+        def update_list_by_ticker(bt_grouped, ticker, is_cme):
+            for widget in bt_scroll_frame.winfo_children():
+                widget.destroy()
+            bt_file_vars.clear()
+
+            if not bt_grouped:
+                seg_bt_models.configure(values=["No Data"], command=None)
+                seg_bt_models.set("No Data")
+                ctk.CTkLabel(bt_scroll_frame, text="No files found for the selected criteria.",
+                             text_color="gray", font=("", 13)).pack(pady=60)
+                return
+
+            # Pivot: model_name -> date_key -> ticker_name -> (fp, dt_time)
+            by_model = {}
+            for date_key, models in bt_grouped.items():
+                for model_name, tickers_map in models.items():
+                    if model_name not in by_model:
+                        by_model[model_name] = {}
+                    by_model[model_name][date_key] = tickers_map
+
+            def show_bt_model(selected_model):
+                for widget in bt_scroll_frame.winfo_children():
+                    widget.destroy()
+                bt_file_vars.clear()
+
+                if selected_model == "No Data" or selected_model not in by_model:
+                    ctk.CTkLabel(bt_scroll_frame, text="No files found.", text_color="gray").pack(pady=50)
+                    return
+
+                dates_map = by_model[selected_model]
+                is_tv = "TV Code" in selected_model
+
+                for date_key in sorted(dates_map.keys()):
+                    tickers_on_date = dates_map[date_key]
+
+                    date_container = ctk.CTkFrame(bt_scroll_frame, fg_color="transparent")
+                    date_container.pack(fill="x", padx=10, pady=(10, 5))
+
+                    date_hdr = ctk.CTkFrame(date_container, fg_color=("#3B3B3B", "#2B2B2B"), corner_radius=5)
+                    date_hdr.pack(fill="x", pady=(0, 2))
+                    date_content = ctk.CTkFrame(date_container, fg_color="transparent")
+                    date_content.pack(fill="x")
+
+                    is_visible_date = ctk.BooleanVar(value=True)
+                    date_chk_list = []
+
+                    def make_date_toggle(dc, iv, tb):
+                        def toggle():
+                            if iv.get():
+                                dc.pack_forget()
+                                tb.configure(text=tb.cget("text").replace("▼", "▶"))
+                                iv.set(False)
+                            else:
+                                dc.pack(fill="x")
+                                tb.configure(text=tb.cget("text").replace("▶", "▼"))
+                                iv.set(True)
+                        return toggle
+
+                    btn_sel_date = ctk.CTkButton(date_hdr, text="☑", width=30, height=28,
+                                                 command=None, fg_color="transparent",
+                                                 hover_color=("#4A4A4A", "#3A3A3A"), font=("", 16))
+                    btn_sel_date.pack(side="left", padx=(5, 0), pady=5)
+
+                    header_mid = ctk.CTkFrame(date_hdr, fg_color="transparent")
+                    header_mid.pack(side="left", fill="x", expand=True)
+
+                    n_date_label = "?" if is_tv else str(len(tickers_on_date))
+                    toggle_date_btn = ctk.CTkButton(header_mid,
+                                                    text=f"▼ {date_key}  ({n_date_label})",
+                                                    command=None, fg_color="transparent",
+                                                    hover_color=("#4A4A4A", "#3A3A3A"),
+                                                    anchor="w", font=("", 13, "bold"))
+                    toggle_date_btn.pack(side="left", fill="x", expand=True, padx=5, pady=5)
+                    toggle_date_btn.configure(command=make_date_toggle(date_content, is_visible_date, toggle_date_btn))
+
+                    if is_tv:
+                        tv_files_sorted = sorted(tickers_on_date.values(), key=lambda x: x[1])
+                        merged_tv = {}
+                        for fp_tv, _ in tv_files_sorted:
+                            try:
+                                with open(fp_tv, "r", encoding="utf-8") as f:
+                                    for line in f.readlines():
+                                        line = line.strip()
+                                        if not line:
+                                            continue
+                                        if '"' in line:
+                                            pq = line.split('"')
+                                            lbl = pq[1] if len(pq) > 1 else "Unknown"
+                                        else:
+                                            lbl = line.split(' ')[0].replace(":", "")
+                                        merged_tv[lbl] = line
+                            except Exception as e:
+                                print(f"Error reading TV file: {e}")
+
+                        filtered_tv = {lbl: c for lbl, c in merged_tv.items() if lbl == ticker}
+                        toggle_date_btn.configure(text=f"▼ {date_key}  ({len(filtered_tv)})")
+
+                        if not filtered_tv:
+                            ctk.CTkLabel(date_content,
+                                         text=f"  '{ticker}' not found in TV Code",
+                                         text_color="gray", font=("", 12)).pack(anchor="w", padx=20, pady=4)
+                        else:
+                            for t_label, content in filtered_tv.items():
+                                var = ctk.BooleanVar(value=True)
+                                chk = ctk.CTkCheckBox(date_content, text=t_label, variable=var,
+                                                      font=("Consolas", 13, "bold"))
+                                chk.pack(anchor="w", padx=20, pady=2)
+                                bt_file_vars.append((var, ("TV_DATA", t_label, content, date_key)))
+                                date_chk_list.append((var, ("TV_DATA", t_label, content, date_key)))
+                    else:
+                        for tn, (fp_n, dt_obj) in sorted(tickers_on_date.items()):
+                            time_s = dt_obj.strftime('%H:%M:%S')
+                            var = ctk.BooleanVar(value=True)
+                            chk = ctk.CTkCheckBox(date_content,
+                                                  text=f"[{time_s}]  {tn}",
+                                                  variable=var, font=("Consolas", 13), height=28, width=500)
+                            chk.pack(anchor="w", padx=20, pady=1, fill="x")
+                            bt_file_vars.append((var, fp_n))
+                            date_chk_list.append((var, fp_n))
+
+                    def make_date_sel_all(checkboxes):
+                        def do_sel():
+                            all_sel = all(v.get() for v, _ in checkboxes)
+                            for v, _ in checkboxes:
+                                v.set(not all_sel)
+                        return do_sel
+
+                    btn_sel_date.configure(command=make_date_sel_all(date_chk_list))
+
+            sorted_models = sorted(by_model.keys())
+            seg_bt_models.configure(values=sorted_models, command=show_bt_model)
+            seg_bt_models.set(sorted_models[0])
+            show_bt_model(sorted_models[0])
+
+        # =====================================================
+        # MODE SWITCH LOGIC
+        # =====================================================
+        def switch_mode(mode):
+            if mode == "By Date":
+                left_panel_bt.grid_remove()
+                right_panel_bt.grid_remove()
+                left_panel.grid(row=1, column=0, sticky="nsew")
+                right_panel.grid(row=1, column=1, sticky="nsew", padx=20, pady=20)
+            else:
+                left_panel.grid_remove()
+                right_panel.grid_remove()
+                left_panel_bt.grid(row=1, column=0, sticky="nsew")
+                right_panel_bt.grid(row=1, column=1, sticky="nsew", padx=20, pady=20)
+
+        seg_mode.configure(command=switch_mode)
+
+        # Init: load By Date mode
         load_files()
 
     def open_file_cross_platform(self, filepath):
