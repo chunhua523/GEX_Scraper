@@ -71,14 +71,50 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
+# Prefer non-CLT Python to avoid old Tk (8.5)
+PYTHON_BIN="python3"
+if [ -x "/opt/homebrew/bin/python3" ]; then
+    PYTHON_BIN="/opt/homebrew/bin/python3"
+elif [ -x "/usr/local/bin/python3" ]; then
+    PYTHON_BIN="/usr/local/bin/python3"
+fi
+
+# Validate base Python Tk version before creating venv
+if ! "$PYTHON_BIN" - <<'PY' > /dev/null 2>&1
+import tkinter as tk
+import sys
+sys.exit(0 if tk.TkVersion >= 8.6 else 1)
+PY
+then
+    echo "Error: Detected Tk < 8.6 from $PYTHON_BIN."
+    echo "This can cause blank/empty GUI windows on macOS."
+    echo "Install a newer Python (python.org installer is OK), then rerun."
+    echo "Download: https://www.python.org/downloads/macos/"
+    exit 1
+fi
+
 # Virtual Environment Setup
 if [ ! -d ".venv" ]; then
     echo "Creating virtual environment (.venv)..."
-    python3 -m venv .venv
+    "$PYTHON_BIN" -m venv .venv
 fi
 
 # Activate Virtual Environment
 source .venv/bin/activate
+
+# If existing venv is backed by an old Tk runtime, rebuild it.
+if ! python - <<'PY' > /dev/null 2>&1
+import tkinter as tk
+import sys
+sys.exit(0 if tk.TkVersion >= 8.6 else 1)
+PY
+then
+    echo "Detected old Tk runtime inside .venv. Recreating virtual environment..."
+    deactivate 2>/dev/null || true
+    rm -rf .venv
+    "$PYTHON_BIN" -m venv .venv
+    source .venv/bin/activate
+fi
 
 # Install/Update Dependencies
 echo "Checking dependencies..."

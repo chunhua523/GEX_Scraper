@@ -7,6 +7,15 @@ import utils
 
 # URL
 BASE_URL = "https://www.lietaresearch.com"
+STOP_FLAG_PATH = os.path.join(os.path.dirname(__file__), ".stop_requested")
+
+
+class LoginRequiredError(Exception):
+    """Raised when the page indicates session expired / not logged in."""
+    pass
+
+
+LOGIN_REQUIRED_REASON = "Login required (session expired)"
 
 class LietaScraper:
     def __init__(self, logger_func=print, browser_type="chrome"):
@@ -17,6 +26,12 @@ class LietaScraper:
         self.browser_type = browser_type
         
         self.stop_requested = False # Flag to control stopping
+
+    def _refresh_stop_requested(self):
+        """Allow external process (API) to request graceful stop via file flag."""
+        if not self.stop_requested and os.path.exists(STOP_FLAG_PATH):
+            self.stop_requested = True
+            self.log("External stop requested. Finishing current step and stopping...")
 
     def _get_brave_path(self):
         """Attempts to find Brave Browser executable path."""
@@ -161,6 +176,55 @@ class LietaScraper:
         finally:
             await self.close()
 
+    async def _assert_logged_in_for_platform(self, page, target_url):
+        """
+        Fail fast when platform page is unavailable due to not-logged-in state.
+        """
+        # Wait shortly for either: platform UI ready OR login-required hints.
+        # This avoids waiting full 60s Playwright timeout on each model page.
+        for _ in range(20):  # up to ~10s
+            if await page.get_by_text("Select model", exact=False).count() > 0:
+                return
+            if await page.get_by_text("選擇模型", exact=False).count() > 0:
+                return
+
+            page_text = await page.evaluate("() => document.body.innerText")
+            lowered = page_text.lower()
+            has_login_marker = (
+                ("login" in lowered)
+                or ("log in" in lowered)
+                or ("sign in" in lowered)
+                or ("登入" in page_text)
+            )
+            has_home_hero = ("掌握數據" in page_text) or ("跟隨市場" in page_text)
+
+            # If page looks like landing/login page, fail immediately.
+            if has_login_marker or has_home_hero:
+                raise LoginRequiredError(
+                    f"Not logged in or session expired while opening {target_url}. "
+                    "Please run 'Log in via Browser' first."
+                )
+            await asyncio.sleep(0.5)
+
+        raise Exception(
+            f"Platform UI not ready within 10s for {target_url} "
+            "(missing 'Select model')."
+        )
+
+    async def _preflight_platform_access(self, context, target_url, label):
+        """
+        Single-shot platform readiness check before launching model queues.
+        """
+        page = await context.new_page()
+        try:
+            page.set_default_timeout(15000)
+            await page.goto(target_url)
+            await page.wait_for_load_state("networkidle")
+            await self._assert_logged_in_for_platform(page, target_url)
+            self.log(f"[Preflight-{label}] Platform ready.")
+        finally:
+            await page.close()
+
     def record_failure(self, platform, model, ticker, reason=""):
         """Records a failure in both log string format and structured format."""
         # String format for log
@@ -173,17 +237,25 @@ class LietaScraper:
         self.failed_items.append(log_msg)
         
         # Structured format for retry
-        self.failed_tasks_structured.append({
+        item = {
             "platform": platform,
             "model": model,
             "ticker": ticker
-        })
+        }
+        if reason:
+            item["reason"] = reason
+        self.failed_tasks_structured.append(item)
 
     async def run_scraping_job(self, tickers: list, models: list, cme_tickers: list, cme_models: list, download_folder: str, parallel_mode: bool = False):
         """
         Main scrapping logic. Returns structured failed tasks.
         """
         self.stop_requested = False
+        if os.path.exists(STOP_FLAG_PATH):
+            try:
+                os.remove(STOP_FLAG_PATH)
+            except Exception:
+                pass
         if not os.path.exists(self.storage_state_path):
              self.log("No session file found. Please use 'Log in via Browser' first.")
              return []
@@ -201,12 +273,34 @@ class LietaScraper:
             await self.start_browser(headless=False)
 
         context = await self.browser.new_context(storage_state=self.storage_state_path, accept_downloads=True)
+
+        need_std = bool(tickers and models)
+        need_cme = bool(cme_tickers and cme_models)
+        try:
+            if need_std:
+                await self._preflight_platform_access(context, f"{BASE_URL}/platform", "STD")
+            if need_cme:
+                await self._preflight_platform_access(context, f"{BASE_URL}/platform/cme", "CME")
+        except Exception as e:
+            self.log(f"Preflight failed: {e}")
+            reason = LOGIN_REQUIRED_REASON if isinstance(e, LoginRequiredError) else "Platform precheck failed"
+            if need_std:
+                for m in models:
+                    for t in tickers:
+                        self.record_failure("std", m, t, reason)
+            if need_cme:
+                for m in cme_models:
+                    for t in cme_tickers:
+                        self.record_failure("cme", m, t, reason)
+            self.log_summary()
+            return self.failed_tasks_structured
         
         tasks = []
         
         # 1. Standard Platform Tasks
         if tickers and models:
             for i, model in enumerate(models):
+                self._refresh_stop_requested()
                 if self.stop_requested:
                     # In sequential mode, this catches future models
                     for skipped_model in models[i:]:
@@ -225,6 +319,7 @@ class LietaScraper:
         if cme_tickers and cme_models:
             CME_URL = f"{BASE_URL}/platform/cme"
             for i, model in enumerate(cme_models):
+                self._refresh_stop_requested()
                 if self.stop_requested:
                     # In sequential mode, this catches future models
                     for skipped_model in cme_models[i:]:
@@ -257,6 +352,11 @@ class LietaScraper:
         failed_tasks: list of dicts {'platform': 'std'|'cme', 'model': ..., 'ticker': ...}
         """
         self.stop_requested = False
+        if os.path.exists(STOP_FLAG_PATH):
+            try:
+                os.remove(STOP_FLAG_PATH)
+            except Exception:
+                pass
         if not os.path.exists(self.storage_state_path):
              self.log("No session file found. Please use 'Log in via Browser' first.")
              return failed_tasks 
@@ -299,10 +399,26 @@ class LietaScraper:
             await self.start_browser(headless=False)
 
         context = await self.browser.new_context(storage_state=self.storage_state_path, accept_downloads=True)
+
+        platforms = {task_info["platform"] for task_info in grouped.values()}
+        try:
+            if "std" in platforms:
+                await self._preflight_platform_access(context, f"{BASE_URL}/platform", "STD")
+            if "cme" in platforms:
+                await self._preflight_platform_access(context, f"{BASE_URL}/platform/cme", "CME")
+        except Exception as e:
+            self.log(f"Preflight failed: {e}")
+            reason = LOGIN_REQUIRED_REASON if isinstance(e, LoginRequiredError) else "Platform precheck failed"
+            for task_info in grouped.values():
+                for t in task_info["tickers"]:
+                    self.record_failure(task_info["platform"], task_info["model"], t, reason)
+            self.log_summary()
+            return self.failed_tasks_structured
         
         tasks = []
         
         for k, task_info in grouped.items():
+            self._refresh_stop_requested()
             if self.stop_requested:
                 # Mark remaining as failed
                 for t in task_info['tickers']:
@@ -371,14 +487,16 @@ class LietaScraper:
             self.log(f"{prefix_log} Page initialized.")
             await page.goto(target_url)
             await page.wait_for_load_state("networkidle")
+            await self._assert_logged_in_for_platform(page, target_url)
             
             # Select Model
-            await page.get_by_text("Select model", exact=False).first.click()
+            await page.get_by_text("Select model", exact=False).first.click(timeout=5000)
             await asyncio.sleep(0.5)
-            await page.get_by_text(model, exact=True).first.click()
+            await page.get_by_text(model, exact=True).first.click(timeout=5000)
             self.log(f"{prefix_log} Model selected.")
 
             for i, ticker in enumerate(tickers):
+                self._refresh_stop_requested()
                 if self.stop_requested:
                     self.log(f"{prefix_log} Stopped. Skipping remaining tickers.")
                     for skipped_ticker in tickers[i:]:
@@ -389,13 +507,12 @@ class LietaScraper:
                 
         except Exception as e:
             self.log(f"{prefix_log} Error: {e}")
-            # If the whole page/model setup failed, mark all tickers as failed
-            # We don't know which ones ran if we crash outside the loop, but usually we are inside try block.
-            # If we are here, something big failed.
-            # Simple approach: Log generic error, but we lose tracking who failed exactly if we don't have index.
-            # Ideally we should fail all input tickers here if loop didn't finish
-            # But the 'process_single_ticker' handles individual errors.
-            pass
+            reason = "Setup error"
+            if isinstance(e, LoginRequiredError):
+                reason = LOGIN_REQUIRED_REASON
+                self.stop_requested = True
+            for t in tickers:
+                self.record_failure(short_plat, model, t, reason)
         finally:
             await page.close()
 
@@ -404,6 +521,7 @@ class LietaScraper:
         short_plat = "cme" if subfolder_prefix == "CME" else "std"
         
         for attempt in range(max_retries):
+            self._refresh_stop_requested()
             if self.stop_requested: 
                 self.record_failure(short_plat, model, ticker, "Stopped")
                 return
@@ -453,6 +571,7 @@ class LietaScraper:
                 
                 data_validated = False
                 for _ in range(120): # Wait up to 60s
+                    self._refresh_stop_requested()
                     if self.stop_requested: return
 
                     try:
@@ -519,6 +638,7 @@ class LietaScraper:
                     # Polling for data update (up to 20s)
                     found_code_line = None
                     for _ in range(120): # 60 seconds total
+                        self._refresh_stop_requested()
                         if self.stop_requested: return
                         
                         # Wait for ANY Put Wall to be present logic (fast check)

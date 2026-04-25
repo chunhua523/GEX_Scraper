@@ -1,3 +1,4 @@
 customtkinter
 playwright
 tkcalendar
+holidays

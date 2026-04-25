@@ -5,9 +5,11 @@ import threading
 import asyncio
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from scraper import LietaScraper
 import utils
 from tkcalendar import Calendar
+import holidays
 # from scraper import LietaScraper
 
 class LietaApp(ctk.CTk):
@@ -31,27 +33,53 @@ class LietaApp(ctk.CTk):
         
         self.current_log_file = None
         self.last_run_date = None
+        self.last_market_skip_date = None
         self.last_failed_tasks = []  # Store failed tasks for retry
         self.check_schedule()
+
+    def _is_us_market_trading_day(self, now_local):
+        """
+        Returns (is_trading_day, us_date_str, reason) based on NYSE calendar in US/Eastern.
+        """
+        us_now = now_local.astimezone(ZoneInfo("America/New_York"))
+        us_date = us_now.date()
+        us_date_str = us_date.isoformat()
+
+        # NYSE is closed on weekends.
+        if us_date.weekday() >= 5:
+            return False, us_date_str, "Weekend (US/Eastern)"
+
+        nyse_holidays = holidays.NYSE(years=[us_date.year])
+        if us_date in nyse_holidays:
+            holiday_name = nyse_holidays.get(us_date, "NYSE Holiday")
+            return False, us_date_str, f"NYSE holiday: {holiday_name}"
+
+        return True, us_date_str, ""
 
     def check_schedule(self):
         """Checks every 10s if we need to run the scheduled task."""
         if self.var_schedule_en.get():
             now = datetime.now()
-            # day_name = now.strftime("%A") 
-            day_index = now.weekday() # 0 = Monday, ..., 4 = Friday
             current_time = now.strftime("%H:%M")
             
             target_time = self.entry_time.get()
             
-            # Check: Mon-Fri (0-4), Time matches (within this minute), and haven't run today
-            if 0 <= day_index <= 4 and current_time == target_time:
+            # Check: local time matches configured HH:MM
+            if current_time == target_time:
                 today_str = now.strftime("%Y-%m-%d")
                 if self.last_run_date != today_str:
                     if self.btn_start.cget("state") != "disabled":
-                        self.log(f"Auto-Schedule Triggered (Mon-Fri) at {target_time}")
-                        self.last_run_date = today_str
-                        self.on_start(skip_selection_dialog=True)
+                        is_open, us_date_str, reason = self._is_us_market_trading_day(now)
+                        if is_open:
+                            self.log(f"Auto-Schedule Triggered at {target_time} (US date: {us_date_str})")
+                            self.last_run_date = today_str
+                            self.on_start(skip_selection_dialog=True)
+                        else:
+                            # Avoid duplicate skip logs in the same date + trigger minute.
+                            skip_key = f"{today_str}|{target_time}|{us_date_str}"
+                            if self.last_market_skip_date != skip_key:
+                                self.log(f"Auto-Schedule Skipped: US market closed ({reason})")
+                                self.last_market_skip_date = skip_key
                     else:
                         self.log("Skipping Schedule: Job already running.")
         
@@ -195,7 +223,7 @@ class LietaApp(ctk.CTk):
         self.schedule_subframe = ctk.CTkFrame(self.global_frame, fg_color="transparent")
         self.schedule_subframe.grid(row=4, column=0, columnspan=2, sticky="ew", padx=15, pady=(5, 15))
         
-        ctk.CTkLabel(self.schedule_subframe, text="Auto-Schedule (Mon-Fri):", font=("",12,"bold")).pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(self.schedule_subframe, text="Auto-Schedule (US Market Open Days):", font=("",12,"bold")).pack(side="left", padx=(0, 10))
         
         self.entry_time = ctk.CTkEntry(self.schedule_subframe, placeholder_text="09:00", width=80)
         self.entry_time.pack(side="left", padx=(0, 15))
