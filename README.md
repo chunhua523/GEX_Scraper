@@ -1,5 +1,10 @@
 # Lieta Scraper
 
+> ⚠️ **DEPRECATED (2026-05-12)** — superseded by [GEX_suite](../gex-suite/) +
+> [tools/gex_chain](../tools/gex_chain/). This directory is kept only as a
+> fallback source for `state.json` (login session) during migration. Do not
+> add new features here.
+
 ## Windows Installation & Run
 1. Install Python 3.
 2. Double click `run.bat` (if exists) or run `python main.py` in terminal.
